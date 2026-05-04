@@ -209,11 +209,11 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 
 ### Phase 2: Storage foundation
 
-- Implement IndexedDB storage with object stores for attempts, in-progress attempt state, question snapshots, and schema metadata.
-- Implement localStorage-backed settings for pill visibility and debug mode.
-- Implement schema migration plumbing from version 1 onward.
-- Implement attempt CRUD, delete attempt, clear all history, export history-only JSON, export full-backup JSON with warning, and import JSON.
-- Add data validation for imported attempts before persistence.
+- [x] Implement IndexedDB storage with object stores for attempts, in-progress attempt state, question snapshots, and schema metadata.
+- [x] Implement localStorage-backed settings for pill visibility and debug mode.
+- [x] Implement schema migration plumbing from version 1 onward.
+- [x] Implement attempt CRUD, delete attempt, clear all history, export history-only JSON, export full-backup JSON with warning, and import JSON.
+- [x] Add data validation for imported attempts before persistence.
 
 ### Phase 3: WebFRED site adapter
 
