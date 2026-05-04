@@ -217,12 +217,12 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 
 ### Phase 3: WebFRED site adapter
 
-- Implement initialization wait for Angular/WebFRED services without blocking the native app.
-- Read exam program, exam name/section, launched scope, current block, block count, item count, current item, item list, answers, marks, and current content from in-page state/services.
-- Use component id and medley id as primary question identity with exam program and exam name/section.
-- Store block number and item index only as attempt-position metadata.
-- Add DOM fallback extraction for current item state if Angular services are unavailable.
-- Add degraded-mode reporting when required state cannot be trusted.
+- [x] Implement initialization wait for Angular/WebFRED services without blocking the native app.
+- [x] Read exam program, exam name/section, launched scope, current block, block count, item count, current item, item list, answers, marks, and current content from in-page state/services.
+- [x] Use component id and medley id as primary question identity with exam program and exam name/section.
+- [x] Store block number and item index only as attempt-position metadata.
+- [x] Add DOM fallback extraction for current item state if Angular services are unavailable.
+- [x] Add degraded-mode reporting when required state cannot be trusted.
 
 ### Phase 4: Answer-key capture
 
