@@ -235,13 +235,13 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 
 ### Phase 5: Tracking engine
 
-- Create or resume an in-progress attempt when a supported MCQ launch is detected.
-- Track answer selections and answer-change timeline from state polling and/or event listeners.
-- Track answered-only progress by block.
-- Track marks, notes, highlights, strikeouts when accessible, with graceful fallback if extraction fails.
-- Track rough per-question time from active-item enter/leave events.
-- Capture and persist full question HTML snapshots plus existing media/resource URLs.
-- Persist changes promptly on answer selection, navigation, mark changes, and page lifecycle events.
+- [x] Create or resume an in-progress attempt when a supported MCQ launch is detected.
+- [x] Track answer selections and answer-change timeline from state polling and/or event listeners.
+- [x] Track answered-only progress by block.
+- [x] Track marks, notes, highlights, strikeouts when accessible, with graceful fallback if extraction fails.
+- [x] Track rough per-question time from active-item enter/leave events.
+- [x] Capture and persist full question HTML snapshots plus existing media/resource URLs.
+- [x] Persist changes promptly on answer selection, navigation, mark changes, and page lifecycle events.
 
 ### Phase 6: Active-exam UI
 
