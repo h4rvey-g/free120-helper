@@ -226,12 +226,12 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 
 ### Phase 4: Answer-key capture
 
-- Implement bulk answer-key/content capture via in-page WebFRED service/API access after WebFRED initialization.
-- Parse correct-answer metadata from returned content without rendering or revealing answers.
-- Retry key capture automatically with limited exponential backoff.
-- Add manual retry in settings.
-- Persist key-capture status per attempt: complete, partial, failed, unknown count.
-- Guarantee key capture does not navigate, answer, submit, or mutate native exam state.
+- [x] Implement bulk answer-key/content capture via in-page WebFRED service/API access after WebFRED initialization.
+- [x] Parse correct-answer metadata from returned content without rendering or revealing answers.
+- [x] Retry key capture automatically with limited exponential backoff.
+- [x] Add manual retry in settings.
+- [x] Persist key-capture status per attempt: complete, partial, failed, unknown count.
+- [x] Guarantee key capture does not navigate, answer, submit, or mutate native exam state.
 
 ### Phase 5: Tracking engine
 
