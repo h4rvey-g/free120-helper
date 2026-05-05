@@ -5,8 +5,13 @@
     "build": "node scripts/build-userscript.mjs",
     "build:dev": "node scripts/build-userscript.mjs --dev",
     "watch": "node scripts/build-userscript.mjs --watch",
-    "test": "node scripts/test-review.mjs",
-    "check": "npm run build && node --check dist/free120-helper.user.js && npm test"
+    "test": "node scripts/test-all.mjs",
+    "test:review": "node scripts/test-review.mjs",
+    "test:storage": "node scripts/test-storage.mjs",
+    "test:adapter": "node scripts/test-adapter.mjs",
+    "test:scoring": "node scripts/test-scoring.mjs",
+    "check": "npm run build && node --check dist/free120-helper.user.js && npm test",
+    "live:validate": "node scripts/live-validate.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

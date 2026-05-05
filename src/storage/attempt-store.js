@@ -119,7 +119,7 @@ function sanitizeJsonCompatible(value, depth = 0, seen = []) {
     if (seen.includes(value)) {
       throw createStorageValidationError('Stored records must not contain circular arrays.');
     }
-    const nextSeen = seen.concat(value);
+    const nextSeen = seen.concat([value]);
     return value.map((item) => sanitizeJsonCompatible(item, depth + 1, nextSeen));
   }
 
@@ -127,7 +127,7 @@ function sanitizeJsonCompatible(value, depth = 0, seen = []) {
     if (seen.includes(value)) {
       throw createStorageValidationError('Stored records must not contain circular objects.');
     }
-    const nextSeen = seen.concat(value);
+    const nextSeen = seen.concat([value]);
     const sanitized = {};
     Object.entries(value).forEach(([key, item]) => {
       if (!isNonEmptyString(key)) {

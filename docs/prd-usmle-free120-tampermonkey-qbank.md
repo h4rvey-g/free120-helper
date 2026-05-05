@@ -299,16 +299,16 @@ Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](pl
 
 ### Phase 11: Testing and live validation
 
-- Add synthetic fixtures for WebFRED-like MCQ content, answer-key metadata, annotations, and incomplete-key states.
-- Unit test storage, migrations, adapter parsing, key capture parsing, extractor, grader, scoring, and review generation.
-- Add module-level tests for exported pure helpers before further splitting large implemented modules.
-- Add a build check that runs esbuild and `node --check dist/free120-helper.user.js` before release.
-- Use Playwright CLI to validate live Step 1 single-block workflow without native Show Correct Answers.
-- Use Playwright CLI to validate live workflow with native Show Correct Answers enabled.
-- Use Playwright CLI to validate all-block review locking behavior.
-- Use Playwright CLI to validate native controls remain functional.
-- Use Playwright CLI to validate refresh/resume and export/import.
-- Keep live-test assertions structural and avoid committing NBME question content.
+- [x] Add synthetic fixtures for WebFRED-like MCQ content, answer-key metadata, annotations, and incomplete-key states.
+- [x] Unit test storage, migrations, adapter parsing, key capture parsing, extractor, grader, scoring, and review generation.
+- [x] Add module-level tests for exported pure helpers before further splitting large implemented modules.
+- [x] Add a build check that runs esbuild and `node --check dist/free120-helper.user.js` before release.
+- [x] Use Playwright CLI to validate live Step 1 single-block workflow without native Show Correct Answers.
+- [x] Use Playwright CLI to validate live workflow with native Show Correct Answers enabled.
+- [x] Use Playwright CLI to validate all-block review locking behavior.
+- [x] Use Playwright CLI to validate native controls remain functional.
+- [x] Use Playwright CLI to validate refresh/resume and export/import.
+- [x] Keep live-test assertions structural and avoid committing NBME question content.
 
 ### Phase 12: Hardening and release
 

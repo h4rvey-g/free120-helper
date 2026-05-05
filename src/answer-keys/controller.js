@@ -2,7 +2,28 @@ import { STORAGE_KEYS, ATTEMPT_STATUS, ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAP
 import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
 import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
-import { firstNonEmpty, buildQuestionIdentity, safeAttribute, safeDatasetValue, isDomElement, isReadableObject, valueToArray, coercePositiveInteger, normalizeMaybeBoolean, readCandidateProperty, safeOwnKeys, uniqueNormalizedStrings, extractChoicesFromDom, safeNowMs, createEmptyWebfredState } from '../webfred/adapter.js';
+import {
+  firstNonEmpty,
+  buildQuestionIdentity,
+  safeAttribute,
+  safeDatasetValue,
+  isDomElement,
+  isReadableObject,
+  valueToArray,
+  coercePositiveInteger,
+  normalizeMaybeBoolean,
+  readCandidateProperty,
+  safeOwnKeys,
+  uniqueNormalizedStrings,
+  extractChoicesFromDom,
+  extractSelectedAnswerIdFromDom,
+  extractQuestionIdentityFromDom,
+  extractExamIdentityFromDom,
+  findCurrentDomItemRoot,
+  collectAngularStateRoots,
+  safeNowMs,
+  createEmptyWebfredState,
+} from '../webfred/adapter.js';
 import { buildAttemptScoreSummary } from '../scoring/grader.js';
 
 function createAnswerKeyCaptureError(message, details) {

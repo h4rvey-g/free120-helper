@@ -2,7 +2,20 @@ import { SCRIPT, STORAGE_KEYS, DB_SCHEMA, ATTEMPT_STATUS, WEBFRED_ADAPTER_STATUS
 import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
 import { isPlainObject, normalizeString, normalizePositiveInteger, createStorageId, sanitizeJsonCompatible, normalizeRecord, normalizeIdArray } from '../storage/attempt-store.js';
-import { safeNowMs, firstNonEmpty, buildQuestionIdentity, safeAttribute, isReadableObject, coercePositiveInteger, uniqueNormalizedStrings, extractCurrentContentFromDom, extractResourceUrls, extractChoicesFromDom, safeElementText } from '../webfred/adapter.js';
+import {
+  safeNowMs,
+  firstNonEmpty,
+  buildQuestionIdentity,
+  safeAttribute,
+  isReadableObject,
+  coercePositiveInteger,
+  uniqueNormalizedStrings,
+  extractCurrentContentFromDom,
+  extractResourceUrls,
+  extractChoicesFromDom,
+  safeElementText,
+  findCurrentDomItemRoot,
+} from '../webfred/adapter.js';
 import { buildAttemptCompletionPatch, inferNativeCompletionState } from '../scoring/grader.js';
 
 function createTrackingEngineError(message, details) {
@@ -10,6 +23,30 @@ function createTrackingEngineError(message, details) {
   error.name = 'Free120TrackingEngineError';
   error.details = details || null;
   return error;
+}
+
+function stableHashString(value) {
+  const text = normalizeString(value, '');
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function stableJsonStringify(value) {
+  try {
+    if (Array.isArray(value)) {
+      return `[${value.map((item) => stableJsonStringify(item)).join(',')}]`;
+    }
+    if (isPlainObject(value)) {
+      return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJsonStringify(value[key])}`).join(',')}}`;
+    }
+    return JSON.stringify(value);
+  } catch (_error) {
+    return '';
+  }
 }
 
 function isSupportedMcqTrackingState(adapterState) {
