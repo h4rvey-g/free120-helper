@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildReviewHtml } from '../src/review/blob-builder.js';
+import { buildReviewHtml, isQBankCacheAttempt, loadQBankFallbackSnapshots } from '../src/review/blob-builder.js';
 import { buildReviewModel } from '../src/review/model.js';
 import { ATTEMPT_STATUS } from '../src/core/constants.js';
 import { canOpenReviewFromHistory, formatHistoryAttemptRow, IMPORT_REPLACE_WARNING } from '../src/ui/launch-history.js';
@@ -101,5 +101,43 @@ assert.equal(historyRow.reviewReady, true);
 assert.equal(canOpenReviewFromHistory(historyAttempt), true);
 assert.equal(canOpenReviewFromHistory({ ...historyAttempt, status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false }), false);
 assert.match(IMPORT_REPLACE_WARNING, /overwrites local attempts/);
+
+assert.equal(isQBankCacheAttempt({ id: 'qbank-cache:USMLE:STPF1:STPF1C0137' }), true);
+assert.equal(isQBankCacheAttempt({ id: 'attempt-normal' }), false);
+const fallbackAttempt = Object.freeze({
+  id: 'attempt-with-missing-snapshot',
+  questionIds: Object.freeze(['real-q1']),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze({
+      'real-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1' }),
+    }),
+  }),
+});
+const fallbackSnapshots = await loadQBankFallbackSnapshots({
+  async listAttempts() {
+    return [Object.freeze({ id: 'qbank-cache:USMLE:STPF1:STPF1C0137' })];
+  },
+  async listQuestionSnapshots() {
+    return [Object.freeze({
+      id: 'qbank-snapshot-1',
+      attemptId: 'qbank-cache:USMLE:STPF1:STPF1C0137',
+      questionId: 'qbank-q1',
+      renderedHtml: '<div id="item1"><ol class="options"></ol></div>',
+      metadata: Object.freeze({ componentId: 'COMP1', medleyId: 'MED1' }),
+    })];
+  },
+}, fallbackAttempt, []);
+assert.equal(fallbackSnapshots.length, 1);
+assert.equal(fallbackSnapshots[0].questionId, 'real-q1');
+assert.equal(fallbackSnapshots[0].metadata.qbankFallbackOriginalQuestionId, 'qbank-q1');
+const fallbackKeyModel = buildReviewModel({
+  id: 'attempt-fallback-key',
+  questionIds: ['q-fallback'],
+  responses: { 'q-fallback': 'A' },
+  scoreSummary: {
+    questionResults: [Object.freeze({ questionId: 'q-fallback', selectedAnswerId: 'A', status: 'unknown' })],
+  },
+}, [Object.freeze({ questionId: 'q-fallback', correctAnswerId: 'A' })]);
+assert.equal(fallbackKeyModel.questions[0].status, 'correct');
 
 console.log('review and history tests passed');

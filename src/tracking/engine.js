@@ -10,13 +10,12 @@ import {
   isReadableObject,
   coercePositiveInteger,
   uniqueNormalizedStrings,
-  extractCurrentContentFromDom,
-  extractResourceUrls,
   extractChoicesFromDom,
   safeElementText,
   findCurrentDomItemRoot,
 } from '../webfred/adapter.js';
 import { buildAttemptCompletionPatch, inferNativeCompletionState } from '../scoring/grader.js';
+import { loadQBankCaptureContext, resolveQBankCaptureForItems } from '../qbank/cache-lookup.js';
 
 function createTrackingEngineError(message, details) {
   const error = new Error(message);
@@ -589,30 +588,28 @@ function mergeTrackingChoices(stateChoices, domChoices) {
   return merged;
 }
 
-function getCorrectAnswerForQuestion(questionId, attempt, answerKeyCaptureResult) {
+function getCorrectAnswerForQuestion(questionId, attempt, qbankCaptureResult) {
   const fromAttempt = attempt && attempt.correctAnswers ? normalizeString(attempt.correctAnswers[questionId], '') : '';
   if (fromAttempt) {
     return fromAttempt;
   }
-  const fromResult = answerKeyCaptureResult && answerKeyCaptureResult.correctAnswers
-    ? normalizeString(answerKeyCaptureResult.correctAnswers[questionId], '')
+  const fromQBank = qbankCaptureResult && qbankCaptureResult.correctAnswers
+    ? normalizeString(qbankCaptureResult.correctAnswers[questionId], '')
     : '';
-  return fromResult;
+  return fromQBank;
 }
 
 function createTrackingWebfredShellSnapshot(candidate = {}) {
   const adapterDocument = candidate.document || null;
-  const root = candidate.root || null;
   const nav = adapterDocument && typeof adapterDocument.querySelector === 'function'
     ? adapterDocument.querySelector(WEBFRED_ADAPTER_CONFIG.DOM_NAV_SELECTOR)
     : null;
-  const section = root && typeof root.closest === 'function' ? root.closest('section#item') : null;
-  const article = root && typeof root.closest === 'function' ? root.closest('article#content') : null;
   return Object.freeze({
     title: normalizeString(adapterDocument && adapterDocument.title, ''),
     navHtml: normalizeString(nav && nav.outerHTML, ''),
-    itemShellHtml: normalizeString((section || article) && (section || article).outerHTML, ''),
+    itemShellHtml: '<section id="item"><article id="content"><div id="medley"></div></article></section>',
     capturedAt: nowIso(),
+    questionContentSource: 'qbank-cache',
   });
 }
 
@@ -622,26 +619,24 @@ function createTrackingQuestionSnapshot(candidate) {
   const questionId = normalizeString(item.questionId, '');
   const stateContent = adapterState.currentContent || {};
   const root = candidate.root || null;
-  const domContent = root ? extractCurrentContentFromDom(root) : null;
-  const choices = mergeTrackingChoices(stateContent.choices, domContent && domContent.choices);
-  const selectedAnswerId = getTrackingSelectedAnswerId(questionId, item, adapterState, choices);
-  const correctAnswerId = getCorrectAnswerForQuestion(questionId, candidate.attempt, candidate.answerKeyCaptureResult);
+  const qbankSnapshotsByQuestionId = isPlainObject(candidate.qbankCaptureResult && candidate.qbankCaptureResult.snapshotsByQuestionId)
+    ? candidate.qbankCaptureResult.snapshotsByQuestionId
+    : {};
+  const qbankSnapshot = qbankSnapshotsByQuestionId[questionId] || null;
+  const qbankMetadata = isPlainObject(qbankSnapshot && qbankSnapshot.metadata) ? qbankSnapshot.metadata : {};
+  const qbankOriginalQuestionId = normalizeString(qbankMetadata.qbankCacheOriginalQuestionId || qbankMetadata.qbankFallbackOriginalQuestionId, '');
+  const qbankSource = isPlainObject(candidate.qbankCaptureResult && candidate.qbankCaptureResult.source) ? candidate.qbankCaptureResult.source : {};
+  const qbankMatchSourcesByQuestionId = isPlainObject(qbankSource.matchSourcesByQuestionId) ? qbankSource.matchSourcesByQuestionId : {};
+  const qbankAttemptIds = Array.isArray(qbankSource.qbankAttemptIds) ? qbankSource.qbankAttemptIds : [];
+  const liveChoices = mergeTrackingChoices(stateContent.choices, root ? extractChoicesFromDom(root) : []);
+  const choices = mergeTrackingChoices(qbankSnapshot && qbankSnapshot.choices, []);
+  const selectedAnswerId = getTrackingSelectedAnswerId(questionId, item, adapterState, liveChoices);
+  const correctAnswerId = getCorrectAnswerForQuestion(questionId, candidate.attempt, candidate.qbankCaptureResult);
   const notes = root ? extractTrackingNotesFromDom(root) : Object.freeze({ status: 'unavailable', text: '', fields: [] });
   const annotations = root ? extractTrackingAnnotationsFromDom(root) : Object.freeze({ status: 'unavailable', highlights: [], strikeouts: [] });
-  const renderedHtml = firstNonEmpty([
-    root && root.outerHTML,
-    stateContent.renderedHtml,
-    domContent && domContent.renderedHtml,
-  ]);
-  const promptHtml = firstNonEmpty([
-    stateContent.promptHtml,
-    domContent && domContent.promptHtml,
-  ]);
-  const resourceUrls = uniqueNormalizedStrings([
-    ...((Array.isArray(stateContent.resourceUrls) ? stateContent.resourceUrls : [])),
-    ...((domContent && Array.isArray(domContent.resourceUrls)) ? domContent.resourceUrls : []),
-    ...(root ? extractResourceUrls(root) : []),
-  ]);
+  const renderedHtml = normalizeString(qbankSnapshot && qbankSnapshot.renderedHtml, '');
+  const promptHtml = normalizeString(qbankSnapshot && qbankSnapshot.promptHtml, '');
+  const resourceUrls = uniqueNormalizedStrings(Array.isArray(qbankSnapshot && qbankSnapshot.resourceUrls) ? qbankSnapshot.resourceUrls : []);
   const timingRecord = candidate.timingByQuestionId && candidate.timingByQuestionId[questionId] ? candidate.timingByQuestionId[questionId] : null;
   const contentHash = stableHashString([
     questionId,
@@ -664,8 +659,12 @@ function createTrackingQuestionSnapshot(candidate) {
       identitySource: normalizeString(item.identitySource, ''),
       adapterStatus: normalizeString(adapterState.status, ''),
       adapterSource: normalizeString(adapterState.source, ''),
-      capturedFromDom: Boolean(root),
-      answerBoxHtml: normalizeString((domContent && domContent.answerBoxHtml) || stateContent.answerBoxHtml, ''),
+      capturedFromDom: false,
+      questionContentSource: qbankSnapshot ? 'qbank-cache' : 'qbank-cache-missing',
+      qbankCacheAttemptId: normalizeString(qbankMetadata.qbankCacheAttemptId || qbankMetadata.qbankFallbackAttemptId || qbankAttemptIds[0], ''),
+      qbankCacheOriginalQuestionId: qbankOriginalQuestionId,
+      qbankCacheMatchSource: normalizeString(qbankMetadata.qbankCacheMatchSource || qbankMatchSourcesByQuestionId[questionId], ''),
+      answerBoxHtml: '',
     }),
     promptHtml,
     renderedHtml,
@@ -681,7 +680,12 @@ function createTrackingQuestionSnapshot(candidate) {
     snapshot: Object.freeze({
       webfredShell: createTrackingWebfredShellSnapshot(candidate),
       currentItem: sanitizeJsonCompatible(item),
-      currentContent: sanitizeJsonCompatible(stateContent || {}),
+      qbankCache: sanitizeJsonCompatible({
+        attemptId: qbankMetadata.qbankCacheAttemptId || qbankMetadata.qbankFallbackAttemptId || qbankAttemptIds[0] || '',
+        originalQuestionId: qbankOriginalQuestionId,
+        matchSource: qbankMetadata.qbankCacheMatchSource || qbankMatchSourcesByQuestionId[questionId] || '',
+        source: qbankSnapshot && qbankSnapshot.snapshot && qbankSnapshot.snapshot.qbankCache ? qbankSnapshot.snapshot.qbankCache : {},
+      }),
       notes,
       annotations,
     }),
@@ -747,16 +751,14 @@ function applyNativeCompletionToTrackingPatch(attempt, patch, adapterState, reas
   });
 }
 
-function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, currentItem, mergeResult, timingByQuestionId, markedQuestionIds, answerKeyCaptureResult, reason) {
+function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, currentItem, mergeResult, timingByQuestionId, markedQuestionIds, qbankCaptureResult, reason) {
   const existingResponses = mergeResult.responses;
   const existingQuestionIds = existingAttempt && existingAttempt.questionIds ? existingAttempt.questionIds : [];
   const questionIds = mergeTrackingQuestionIds(existingQuestionIds, itemList, currentItem && currentItem.questionId);
   const progress = buildAnsweredProgressByBlock(questionIds, itemList, existingResponses);
-  const currentAnswerKeys = answerKeyCaptureResult && answerKeyCaptureResult.correctAnswers ? answerKeyCaptureResult.correctAnswers : {};
-  const correctAnswers = {
-    ...((existingAttempt && existingAttempt.correctAnswers) || {}),
-    ...currentAnswerKeys,
-  };
+  const correctAnswers = qbankCaptureResult && qbankCaptureResult.correctAnswers ? qbankCaptureResult.correctAnswers : {};
+  const qbankSummary = qbankCaptureResult && qbankCaptureResult.summary ? qbankCaptureResult.summary : null;
+  const qbankSource = qbankCaptureResult && qbankCaptureResult.source ? qbankCaptureResult.source : null;
   const existingSource = isPlainObject(existingAttempt && existingAttempt.source) ? existingAttempt.source : {};
   return Object.freeze({
     schemaVersion: DB_SCHEMA.VERSION,
@@ -770,7 +772,7 @@ function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, curr
     responses: existingResponses,
     answerTimeline: appendTrackingAnswerTimeline(existingAttempt && existingAttempt.answerTimeline, mergeResult.changes, existingAttempt.id, reason, adapterState),
     correctAnswers,
-    answerKeyCapture: normalizeRecord((existingAttempt && existingAttempt.answerKeyCapture) || {}),
+    answerKeyCapture: qbankSummary ? normalizeRecord(qbankSummary) : normalizeRecord((existingAttempt && existingAttempt.answerKeyCapture) || {}),
     markedQuestionIds,
     notesByQuestionId: normalizeRecord((existingAttempt && existingAttempt.notesByQuestionId) || {}),
     annotationsByQuestionId: normalizeRecord((existingAttempt && existingAttempt.annotationsByQuestionId) || {}),
@@ -781,6 +783,7 @@ function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, curr
       adapterSource: adapterState.source,
       trackingEngineStatus: adapterState.status === WEBFRED_ADAPTER_STATUS.READY ? TRACKING_ENGINE_STATUS.TRACKING : TRACKING_ENGINE_STATUS.DEGRADED,
       progress,
+      qbankCache: qbankSource ? normalizeRecord(qbankSource) : normalizeRecord(existingSource.qbankCache || {}),
       itemMetadataByQuestionId: buildTrackingItemMetadataByQuestionId(existingAttempt, itemList, currentItem),
       lastTrackingReason: normalizeString(reason, 'state-update'),
       lastTrackedAt: nowIso(),
@@ -903,9 +906,13 @@ async function persistTrackingState(options) {
     options.reason || 'state-update',
     { pause: Boolean(options.pauseTiming || adapterDocument.visibilityState === 'hidden') }
   );
-  const answerKeyCaptureResult = options.answerKeyCapture && typeof options.answerKeyCapture.getLastResult === 'function'
-    ? options.answerKeyCapture.getLastResult()
-    : null;
+  const trackingQuestionIds = mergeTrackingQuestionIds(attempt.questionIds || [], itemList, currentItem && currentItem.questionId);
+  const qbankCaptureResult = resolveQBankCaptureForItems(options.qbankCaptureContext, {
+    itemList,
+    currentItem,
+    questionIds: trackingQuestionIds,
+    expectedCount: Math.max(trackingQuestionIds.length, coercePositiveInteger(adapterState.itemCount, 0), coercePositiveInteger(attempt && attempt.questionCount, 0)),
+  });
   let patch = buildTrackingAttemptPatch(
     attempt,
     adapterState,
@@ -914,7 +921,7 @@ async function persistTrackingState(options) {
     mergeResult,
     timingByQuestionId,
     markedQuestionIds,
-    answerKeyCaptureResult,
+    qbankCaptureResult,
     options.reason || 'state-update'
   );
 
@@ -929,7 +936,7 @@ async function persistTrackingState(options) {
       root,
       document: adapterDocument,
       timingByQuestionId,
-      answerKeyCaptureResult,
+      qbankCaptureResult,
     });
     try {
       await storage.saveQuestionSnapshot(snapshot);
@@ -976,7 +983,6 @@ function createTrackingEngine(options = {}) {
   const logger = options.logger || createLogger(createSettingsStore(adapterWindow.localStorage, STORAGE_KEYS.SETTINGS));
   const storage = options.storage || null;
   const webfredAdapter = options.webfredAdapter || null;
-  const answerKeyCapture = options.answerKeyCapture || null;
   const runtimeContext = options.runtimeContext || detectRuntimeContext(adapterWindow.location);
   const pollIntervalMs = coercePositiveInteger(options.pollIntervalMs, TRACKING_ENGINE_CONFIG.POLL_INTERVAL_MS);
   const eventFlushDelayMs = coercePositiveInteger(options.eventFlushDelayMs, TRACKING_ENGINE_CONFIG.EVENT_FLUSH_DELAY_MS);
@@ -990,6 +996,7 @@ function createTrackingEngine(options = {}) {
   let unsubscribeAdapter = null;
   let lastState = null;
   let lastError = null;
+  let qbankCaptureContext = null;
   const listeners = new Set();
   const timingState = createTrackingTimingState(adapterWindow);
 
@@ -1035,7 +1042,7 @@ function createTrackingEngine(options = {}) {
         attempt,
         adapterState,
         timingState,
-        answerKeyCapture,
+        qbankCaptureContext,
         reason,
         pauseTiming: Boolean(flushOptions.pauseTiming),
       });
@@ -1176,23 +1183,6 @@ function createTrackingEngine(options = {}) {
     unsubscribeAdapter = null;
   }
 
-  async function startAnswerKeyCaptureForAttempt(adapterState) {
-    if (!answerKeyCapture || !attempt || typeof answerKeyCapture.startAutoCapture !== 'function') {
-      return null;
-    }
-    return answerKeyCapture.startAutoCapture({
-      attemptId: attempt.id,
-      adapterState,
-      expectedCount: attempt.questionCount || (adapterState && adapterState.itemCount) || 0,
-    }).then((result) => {
-      logger.debug('Answer-key capture finished.', result && result.summary ? result.summary : result);
-      return queueFlush('answer-key-capture', { adapterState: webfredAdapter && webfredAdapter.getLastState ? webfredAdapter.getLastState() : adapterState });
-    }).catch((error) => {
-      logger.warn('Answer-key capture failed.', error);
-      return queueFlush('answer-key-capture-failed');
-    });
-  }
-
   async function start(startOptions = {}) {
     if (startPromise) {
       return startPromise;
@@ -1219,11 +1209,11 @@ function createTrackingEngine(options = {}) {
         return Object.freeze({ status, attempt: null, state: adapterState });
       }
       attempt = await createOrResumeTrackingAttempt(storage, adapterState, runtimeContext, logger);
+      qbankCaptureContext = await loadQBankCaptureContext(storage, logger);
       setStatus(adapterState.status === WEBFRED_ADAPTER_STATUS.READY ? TRACKING_ENGINE_STATUS.TRACKING : TRACKING_ENGINE_STATUS.DEGRADED);
       addDomListeners();
       startPolling();
       await queueFlush('initial', { adapterState });
-      startAnswerKeyCaptureForAttempt(adapterState);
       return Object.freeze({ status, attempt, state: adapterState });
     })().catch((error) => {
       lastError = error;
@@ -1282,8 +1272,6 @@ function createTrackingEngine(options = {}) {
     },
   });
 }
-
-// Phase 4 answer-key capture lives below this marker.
 
 export {
   createTrackingEngine,

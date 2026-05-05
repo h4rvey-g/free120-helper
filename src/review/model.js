@@ -161,7 +161,11 @@ function buildReviewQuestion(attempt, questionId, snapshot, result) {
     result && result.correctAnswerId,
     normalizeString(correctAnswers[questionId], normalizeString(snapshot && snapshot.correctAnswerId, ''))
   );
-  const status = normalizeString(result && result.status, inferFallbackStatus(selectedAnswerId, correctAnswerId));
+  const fallbackStatus = inferFallbackStatus(selectedAnswerId, correctAnswerId);
+  const resultStatus = normalizeString(result && result.status, '');
+  const status = resultStatus === GRADE_STATUS.UNKNOWN && correctAnswerId
+    ? fallbackStatus
+    : normalizeString(resultStatus, fallbackStatus);
   return Object.freeze({
     questionId,
     blockNumber: coercePositiveInteger(result && result.blockNumber, coercePositiveInteger(snapshot && snapshot.blockNumber, 1)),

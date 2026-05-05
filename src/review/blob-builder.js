@@ -2,6 +2,7 @@ import { GRADE_STATUS } from '../scoring/grader.js';
 import { normalizeString } from '../storage/attempt-store.js';
 import { buildReviewModel } from './model.js';
 import { REVIEW_PAGE_CSS } from './page-styles.js';
+import { isQBankCacheAttempt, loadQBankSnapshotsForAttempt } from '../qbank/cache-lookup.js';
 
 const REVIEW_PAGE_VERSION = 1;
 
@@ -491,6 +492,10 @@ function createReviewBlobUrl(attempt, snapshots = [], adapterWindow = window) {
   return URLObject.createObjectURL(blob);
 }
 
+async function loadQBankFallbackSnapshots(storage, attempt, ownSnapshots) {
+  return loadQBankSnapshotsForAttempt(storage, attempt, ownSnapshots, { onlyMissing: true });
+}
+
 async function openReviewTab(options = {}) {
   const adapterWindow = options.window || window;
   const storage = options.storage;
@@ -515,7 +520,10 @@ async function openReviewTab(options = {}) {
     if (!attempt) {
       throw new Error(`Attempt not found: ${attemptId}`);
     }
-    const snapshots = await storage.listQuestionSnapshots(attemptId);
+    const ownSnapshots = await storage.listQuestionSnapshots(attemptId);
+    const qbankSnapshots = await loadQBankSnapshotsForAttempt(storage, attempt, ownSnapshots);
+    const qbankQuestionIds = new Set(qbankSnapshots.map((snapshot) => normalizeString(snapshot && snapshot.questionId, '')).filter(Boolean));
+    const snapshots = qbankSnapshots.concat(ownSnapshots.filter((snapshot) => !qbankQuestionIds.has(normalizeString(snapshot && snapshot.questionId, ''))));
     const url = createReviewBlobUrl(attempt, snapshots, adapterWindow);
     try {
       opened.location.href = url;
@@ -524,7 +532,7 @@ async function openReviewTab(options = {}) {
         adapterWindow.open(url, '_blank', 'noopener,noreferrer');
       }
     }
-    return Object.freeze({ url, window: opened, attemptId, snapshotCount: snapshots.length });
+    return Object.freeze({ url, window: opened, attemptId, snapshotCount: snapshots.length, qbankFallbackSnapshotCount: qbankSnapshots.length });
   } catch (error) {
     try {
       if (opened.document && opened.document.body) {
@@ -540,5 +548,7 @@ export {
   REVIEW_PAGE_VERSION,
   buildReviewHtml,
   createReviewBlobUrl,
+  isQBankCacheAttempt,
+  loadQBankFallbackSnapshots,
   openReviewTab,
 };

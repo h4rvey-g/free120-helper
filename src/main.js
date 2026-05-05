@@ -6,8 +6,6 @@ import {
   EXPORT_TYPES,
   FULL_BACKUP_WARNING,
   PAGE_KIND,
-  ANSWER_KEY_CAPTURE_STATUS,
-  ANSWER_KEY_CAPTURE_SOURCE,
   TRACKING_ENGINE_STATUS,
 } from './core/constants.js';
 import { createSettingsStore } from './core/settings.js';
@@ -15,10 +13,10 @@ import { createLogger } from './core/logger.js';
 import { detectRuntimeContext } from './core/runtime-context.js';
 import { createAttemptStore } from './storage/attempt-store.js';
 import { createWebfredSiteAdapter } from './webfred/adapter.js';
-import { createAnswerKeyCaptureController } from './answer-keys/controller.js';
 import { createTrackingEngine } from './tracking/engine.js';
 import { createActiveExamPill } from './ui/active-exam-pill.js';
 import { createLaunchHistory } from './ui/launch-history.js';
+import { createQBankCacheController } from './qbank/cache-controller.js';
 import { buildReviewHtml, openReviewTab } from './review/blob-builder.js';
 import {
   createRuntimeState,
@@ -41,20 +39,12 @@ const webfredAdapter = createWebfredSiteAdapter({
   document,
   logger,
 });
-const answerKeyCapture = createAnswerKeyCaptureController({
-  window,
-  document,
-  logger,
-  webfredAdapter,
-  storage: attemptStore,
-});
 const trackingEngine = createTrackingEngine({
   window,
   document,
   logger,
   storage: attemptStore,
   webfredAdapter,
-  answerKeyCapture,
   runtimeContext,
 });
 let activeExamPill = null;
@@ -67,7 +57,6 @@ if (runtimeContext.pageKind === PAGE_KIND.WEBFRED) {
       settingsStore,
       storage: attemptStore,
       webfredAdapter,
-      answerKeyCapture,
       trackingEngine,
       reviewLauncher(attemptId, attempt) {
         return openReviewTab({ window, storage: attemptStore, attemptId, attempt });
@@ -78,14 +67,22 @@ if (runtimeContext.pageKind === PAGE_KIND.WEBFRED) {
   }
 }
 
+let qbankCache = null;
 let launchHistory = null;
 if (runtimeContext.pageKind === PAGE_KIND.LAUNCH) {
   try {
+    qbankCache = createQBankCacheController({
+      window,
+      document,
+      logger,
+      storage: attemptStore,
+    });
     launchHistory = createLaunchHistory({
       window,
       document,
       logger,
       storage: attemptStore,
+      qbankCache,
       reviewLauncher(attemptId, attempt) {
         return openReviewTab({ window, storage: attemptStore, attemptId, attempt });
       },
@@ -96,15 +93,6 @@ if (runtimeContext.pageKind === PAGE_KIND.LAUNCH) {
 }
 const helperSettings = Object.freeze({
   ...settingsStore,
-  retryAnswerKeyCapture(captureOptions = {}) {
-    return answerKeyCapture.manualRetry(captureOptions);
-  },
-  getAnswerKeyCaptureStatus() {
-    return answerKeyCapture.getStatus();
-  },
-  getLastAnswerKeyCaptureResult() {
-    return answerKeyCapture.getLastResult();
-  },
   getTrackingStatus() {
     return trackingEngine.getStatus();
   },
@@ -123,10 +111,6 @@ const api = Object.freeze({
   settings: helperSettings,
   storage: attemptStore,
   webfred: webfredAdapter,
-  answerKeys: answerKeyCapture,
-  answerKeyCapture,
-  answerKeyCaptureStatuses: ANSWER_KEY_CAPTURE_STATUS,
-  answerKeyCaptureSources: ANSWER_KEY_CAPTURE_SOURCE,
   review: Object.freeze({
     buildReviewHtml,
     openAttempt(attemptId) {
@@ -136,14 +120,19 @@ const api = Object.freeze({
   tracking: trackingEngine,
   trackingEngine,
   trackingEngineStatuses: TRACKING_ENGINE_STATUS,
+  qbankCache,
   ui: Object.freeze({
     activeExamPill,
     launchHistory,
+    qbankCache,
     getActiveExamPill() {
       return activeExamPill;
     },
     getLaunchHistory() {
       return launchHistory;
+    },
+    getQBankCache() {
+      return qbankCache;
     },
   }),
   logger,
@@ -168,10 +157,10 @@ const services = Object.freeze({
   runtimeState,
   storage: attemptStore,
   webfredAdapter,
-  answerKeyCapture,
   trackingEngine,
   activeExamPill,
   launchHistory,
+  qbankCache,
 });
 
 if (runtimeContext.pageKind === PAGE_KIND.LAUNCH) {

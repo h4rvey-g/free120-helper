@@ -3,8 +3,10 @@ import { nowIso } from '../core/logger.js';
 import { buildAttemptCompletionPatch, shouldManualFinishCompleteAttempt } from '../scoring/grader.js';
 
 const ACTIVE_EXAM_PILL_STYLE_ID = 'f120-active-exam-pill-style';
+const END_EXAM_REVIEW_CTA_ID = 'f120-end-exam-review-cta';
 const REVIEW_READY_EVENT = 'free120-helper:review-ready';
 const MANUAL_FINISH_WARNING = 'Manual finish does not submit, end, or change the native NBME exam. It only marks this local helper attempt review-ready. Grading/review will cover only captured questions, final captured answers, and captured answer keys.';
+const END_EXAM_REVIEW_LOCKED_MESSAGE = 'Review unlocks after the helper finishes local grading.';
 
 function isObject(value) {
   return Boolean(value && typeof value === 'object');
@@ -207,6 +209,120 @@ function isAttemptReviewReady(attempt) {
     return false;
   }
   return Boolean(attempt.reviewReady) || attempt.status === ATTEMPT_STATUS.COMPLETED || attempt.status === ATTEMPT_STATUS.PARTIAL;
+}
+
+function isEndExamRoute(currentLocation) {
+  const href = normalizeString(currentLocation && currentLocation.href, '');
+  const hash = normalizeString(currentLocation && currentLocation.hash, '');
+  return /(?:#|%23)!?\/endExam(?:[/?#]|$)/i.test(href)
+    || /^#!?\/endExam(?:[/?#]|$)/i.test(hash)
+    || /\/endExam(?:[/?#]|$)/i.test(hash);
+}
+
+function isTerminalAdapterState(adapterState) {
+  const terminalState = isObject(adapterState && adapterState.terminalState) ? adapterState.terminalState : {};
+  return Boolean(terminalState.isTerminal || terminalState.blockComplete || terminalState.examComplete || terminalState.allBlocksComplete);
+}
+
+function deriveEndExamReviewState(candidate = {}) {
+  const attempt = candidate.attempt || null;
+  const adapterState = candidate.adapterState || null;
+  const routeMatched = isEndExamRoute(candidate.location || (candidate.window && candidate.window.location));
+  const terminalDetected = isTerminalAdapterState(adapterState);
+  const reviewReady = isAttemptReviewReady(attempt);
+  const visible = Boolean(routeMatched || terminalDetected);
+  return Object.freeze({
+    visible,
+    enabled: Boolean(visible && attempt && reviewReady),
+    routeMatched,
+    terminalDetected,
+    reviewReady,
+    reason: visible
+      ? (terminalDetected ? 'terminal-detected' : 'end-exam-route')
+      : 'not-ended',
+  });
+}
+
+function parseDateMs(value) {
+  const parsed = Date.parse(normalizeString(value, ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function pickLatestEndExamAttempt(attempts) {
+  const list = Array.isArray(attempts) ? attempts.filter(Boolean) : [];
+  if (!list.length) {
+    return null;
+  }
+  const sorted = list.slice().sort((left, right) => {
+    const leftTime = Math.max(parseDateMs(left.updatedAt), parseDateMs(left.completedAt), parseDateMs(left.startedAt), parseDateMs(left.createdAt));
+    const rightTime = Math.max(parseDateMs(right.updatedAt), parseDateMs(right.completedAt), parseDateMs(right.startedAt), parseDateMs(right.createdAt));
+    return rightTime - leftTime;
+  });
+  return sorted.find((attempt) => isAttemptReviewReady(attempt)) || sorted.find((attempt) => attempt.status === ATTEMPT_STATUS.IN_PROGRESS) || sorted[0] || null;
+}
+
+function uniquePositiveIntegers(values) {
+  const seen = new Set();
+  const result = [];
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const normalized = coerceNonNegativeInteger(value, 0);
+    if (normalized > 0 && !seen.has(normalized)) {
+      seen.add(normalized);
+      result.push(normalized);
+    }
+  });
+  return result.sort((left, right) => left - right);
+}
+
+function getAttemptBlockNumbers(attempt, adapterState = null) {
+  const source = isObject(attempt && attempt.source) ? attempt.source : {};
+  const metadata = isObject(source.itemMetadataByQuestionId) ? source.itemMetadataByQuestionId : {};
+  return uniquePositiveIntegers([
+    ...((Array.isArray(attempt && attempt.blockMetadata) ? attempt.blockMetadata : []).map((block) => block && block.blockNumber)),
+    ...((Array.isArray(adapterState && adapterState.blockMetadata) ? adapterState.blockMetadata : []).map((block) => block && block.blockNumber)),
+    ...Object.values(metadata).map((item) => item && item.blockNumber),
+    adapterState && adapterState.currentBlock,
+  ]);
+}
+
+function buildEndExamCompletionAdapterState(attempt, adapterState = null) {
+  const blockNumbers = getAttemptBlockNumbers(attempt, adapterState);
+  const blockCount = Math.max(
+    coerceNonNegativeInteger(adapterState && adapterState.blockCount, 0),
+    coerceNonNegativeInteger(attempt && attempt.launchedScope && attempt.launchedScope.blockCount, 0),
+    blockNumbers.length,
+    1
+  );
+  const completedBlockNumbers = blockCount > 0
+    ? Array.from({ length: blockCount }, (_item, index) => index + 1)
+    : blockNumbers;
+  const currentBlock = completedBlockNumbers[completedBlockNumbers.length - 1]
+    || coerceNonNegativeInteger(adapterState && adapterState.currentBlock, 0)
+    || 1;
+  const existingTerminal = isObject(adapterState && adapterState.terminalState) ? adapterState.terminalState : {};
+  return Object.freeze({
+    ...(isObject(adapterState) ? adapterState : {}),
+    currentBlock,
+    blockCount,
+    terminalState: Object.freeze({
+      ...existingTerminal,
+      isTerminal: true,
+      blockComplete: true,
+      examComplete: true,
+      allBlocksComplete: true,
+      currentBlock,
+      completedBlockNumbers: Object.freeze(completedBlockNumbers),
+      reason: normalizeString(existingTerminal.reason, 'end-exam-route'),
+    }),
+  });
+}
+
+function buildEndExamCompletionPatch(attempt, adapterState = null, options = {}) {
+  return buildAttemptCompletionPatch(attempt, {
+    adapterState: buildEndExamCompletionAdapterState(attempt, adapterState),
+    completedAt: options.completedAt || nowIso(),
+    reason: normalizeString(options.reason, 'native-end-exam-route'),
+  });
 }
 
 function buildManualFinishAttemptPatch(attempt, progress, options = {}) {
@@ -417,6 +533,55 @@ function injectActiveExamPillStyles(adapterDocument) {
     .f120-active-exam-pill__message[hidden] {
       display: none !important;
     }
+    #f120-end-exam-review-cta {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      z-index: ${SCRIPT.UI_Z_INDEX.PILL};
+      pointer-events: auto;
+      max-width: min(360px, calc(100vw - 24px));
+      padding: 12px;
+      border: 1px solid rgba(37, 99, 235, 0.24);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.98);
+      box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
+      color: #111827;
+    }
+    #f120-end-exam-review-cta[hidden] {
+      display: none !important;
+    }
+    .f120-end-exam-review-cta__title {
+      margin: 0 0 4px;
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .f120-end-exam-review-cta__text {
+      margin: 0 0 10px;
+      color: #475569;
+      font-size: 12px;
+    }
+    .f120-end-exam-review-cta__button {
+      width: 100%;
+      border: 1px solid #1d4ed8;
+      border-radius: 10px;
+      background: #2563eb;
+      color: #fff;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 800;
+      padding: 9px 12px;
+    }
+    .f120-end-exam-review-cta__button:hover:not(:disabled) {
+      background: #1d4ed8;
+    }
+    .f120-end-exam-review-cta__button:focus-visible {
+      outline: 3px solid rgba(37, 99, 235, 0.35);
+      outline-offset: 2px;
+    }
+    .f120-end-exam-review-cta__button:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
     .f120-active-exam-pill__privacy {
       margin-top: 10px;
       padding-top: 8px;
@@ -498,43 +663,19 @@ function setMessage(messageElement, message, kind = 'info') {
   messageElement.textContent = text;
 }
 
-function chooseAnswerKeySummary(result, attempt) {
-  const resultSummary = isObject(result && result.summary) ? result.summary : null;
-  const attemptSummary = isObject(attempt && attempt.answerKeyCapture) ? attempt.answerKeyCapture : null;
-  if (!resultSummary) {
-    return attemptSummary || {};
-  }
-  if (!attemptSummary) {
-    return resultSummary;
-  }
-  const resultExpected = coerceNonNegativeInteger(resultSummary.expectedCount, 0);
-  const attemptExpected = coerceNonNegativeInteger(attemptSummary.expectedCount, 0);
-  const resultKnown = coerceNonNegativeInteger(resultSummary.knownCount, 0);
-  const attemptKnown = coerceNonNegativeInteger(attemptSummary.knownCount, 0);
-  if (attemptExpected > resultExpected || attemptKnown > resultKnown) {
-    return attemptSummary;
-  }
-  return resultSummary;
-}
-
-function summarizeAnswerKeyCapture(answerKeyCapture, attempt) {
-  const result = answerKeyCapture && hasFunction(answerKeyCapture, 'getLastResult') ? answerKeyCapture.getLastResult() : null;
-  const resultSummary = isObject(result && result.summary) ? result.summary : null;
-  const summary = chooseAnswerKeySummary(result, attempt);
-  const status = summary === resultSummary
-    ? normalizeString(answerKeyCapture && hasFunction(answerKeyCapture, 'getStatus') ? answerKeyCapture.getStatus() : summary.status, 'idle')
-    : normalizeString(summary.status, 'idle');
+function summarizeQBankKeys(attempt) {
+  const summary = isObject(attempt && attempt.answerKeyCapture) ? attempt.answerKeyCapture : {};
   return Object.freeze({
-    status,
-    source: normalizeString(summary.source, 'unavailable'),
+    status: normalizeString(summary.status, 'idle'),
+    source: normalizeString(summary.source, 'qbank-cache'),
     knownCount: coerceNonNegativeInteger(summary.knownCount, 0),
     expectedCount: coerceNonNegativeInteger(summary.expectedCount, 0),
     unknownCount: coerceNonNegativeInteger(summary.unknownCount, 0),
-    retryCount: coerceNonNegativeInteger(summary.retryCount, 0),
-    manual: Boolean(summary.manual),
+    retryCount: 0,
+    manual: false,
     failureReason: normalizeString(summary.failureReason, ''),
     failureDetail: normalizeString(summary.failureDetail, ''),
-    active: Boolean(answerKeyCapture && hasFunction(answerKeyCapture, 'isCaptureActive') && answerKeyCapture.isCaptureActive()),
+    active: false,
   });
 }
 
@@ -561,7 +702,7 @@ function summarizeKeys(summary) {
 function renderSettingsDetails(adapterDocument, detailContainer, snapshot) {
   removeChildren(detailContainer);
   appendDetailRow(adapterDocument, detailContainer, 'Tracking', snapshot.trackingStatus);
-  appendDetailRow(adapterDocument, detailContainer, 'Key capture', `${snapshot.keySummary.status} · ${snapshot.keySummary.source}`);
+  appendDetailRow(adapterDocument, detailContainer, 'QBank keys', `${snapshot.keySummary.status} · ${snapshot.keySummary.source}`);
   appendDetailRow(adapterDocument, detailContainer, 'Keys', summarizeKeys(snapshot.keySummary));
   if (snapshot.keySummary.failureReason) {
     appendDetailRow(adapterDocument, detailContainer, 'Key failure', snapshot.keySummary.failureDetail || snapshot.keySummary.failureReason);
@@ -621,11 +762,6 @@ function buildActiveExamPillDom(adapterDocument) {
     type: 'button',
     text: 'Finish locally…',
   });
-  const retryKeyButton = createElement(adapterDocument, 'button', {
-    className: 'f120-active-exam-pill__action',
-    type: 'button',
-    text: 'Retry keys',
-  });
   const message = createElement(adapterDocument, 'div', {
     className: 'f120-active-exam-pill__message',
     hidden: true,
@@ -636,7 +772,7 @@ function buildActiveExamPillDom(adapterDocument) {
     text: 'Local only. Does not submit answers, navigate WebFRED, or show correct answers during active exam.',
   });
 
-  actions.append(reviewButton, manualFinishButton, retryKeyButton);
+  actions.append(reviewButton, manualFinishButton);
   panel.append(title, visibleLabel, debugLabel, detailContainer, actions, message, privacy);
   shell.append(pillButton, settingsButton);
   root.append(shell, panel);
@@ -652,9 +788,32 @@ function buildActiveExamPillDom(adapterDocument) {
     detailContainer,
     reviewButton,
     manualFinishButton,
-    retryKeyButton,
     message,
   });
+}
+
+function buildEndExamReviewCtaDom(adapterDocument) {
+  const root = createElement(adapterDocument, 'aside', {
+    id: END_EXAM_REVIEW_CTA_ID,
+    hidden: true,
+    attributes: { 'data-free120-helper': 'end-exam-review-cta', role: 'complementary', 'aria-label': 'Free120 Helper review mode' },
+  });
+  const title = createElement(adapterDocument, 'p', {
+    className: 'f120-end-exam-review-cta__title',
+    text: 'Exam ended',
+  });
+  const text = createElement(adapterDocument, 'p', {
+    className: 'f120-end-exam-review-cta__text',
+    text: END_EXAM_REVIEW_LOCKED_MESSAGE,
+  });
+  const button = createElement(adapterDocument, 'button', {
+    className: 'f120-end-exam-review-cta__button',
+    type: 'button',
+    text: 'Go to review mode',
+  });
+
+  root.append(title, text, button);
+  return Object.freeze({ root, title, text, button });
 }
 
 
@@ -663,7 +822,6 @@ function createActiveExamPill(options = {}) {
   const adapterDocument = options.document || adapterWindow.document || document;
   const settingsStore = options.settingsStore || options.settings;
   const trackingEngine = options.trackingEngine || null;
-  const answerKeyCapture = options.answerKeyCapture || null;
   const webfredAdapter = options.webfredAdapter || null;
   const storage = options.storage || null;
   const logger = options.logger || { debug() {}, warn() {}, error() {} };
@@ -679,10 +837,13 @@ function createActiveExamPill(options = {}) {
   let unsubscribeTracking = null;
   let unsubscribeAdapter = null;
   let manualFinishedAttempt = null;
+  let endExamAttempt = null;
+  let endExamAttemptLoading = false;
   let lastSnapshot = null;
 
   injectActiveExamPillStyles(adapterDocument);
   const dom = buildActiveExamPillDom(adapterDocument);
+  const endExamCta = buildEndExamReviewCtaDom(adapterDocument);
 
   function getSettings() {
     try {
@@ -693,8 +854,11 @@ function createActiveExamPill(options = {}) {
   }
 
   function getAttempt() {
+    const trackingAttempt = trackingEngine && hasFunction(trackingEngine, 'getAttempt') ? trackingEngine.getAttempt() : null;
     return manualFinishedAttempt
-      || (trackingEngine && hasFunction(trackingEngine, 'getAttempt') ? trackingEngine.getAttempt() : null);
+      || (isEndExamRoute(adapterWindow.location) ? endExamAttempt : null)
+      || trackingAttempt
+      || endExamAttempt;
   }
 
   function getAdapterState() {
@@ -710,6 +874,45 @@ function createActiveExamPill(options = {}) {
     return 'unavailable';
   }
 
+  async function syncEndExamAttempt(snapshot) {
+    if (destroyed || endExamAttemptLoading || !storage) {
+      return;
+    }
+    const endExamReview = snapshot && snapshot.endExamReview ? snapshot.endExamReview : null;
+    if (!endExamReview || !endExamReview.visible) {
+      return;
+    }
+
+    endExamAttemptLoading = true;
+    let shouldRefresh = false;
+    try {
+      let candidate = snapshot.attempt || null;
+      if (!candidate && hasFunction(storage, 'listAttempts')) {
+        candidate = pickLatestEndExamAttempt(await storage.listAttempts());
+      }
+      if (!candidate) {
+        return;
+      }
+      if (endExamReview.routeMatched && !isAttemptReviewReady(candidate) && hasFunction(storage, 'updateAttempt')) {
+        endExamAttempt = await storage.updateAttempt(candidate.id, buildEndExamCompletionPatch(candidate, snapshot.adapterState));
+        shouldRefresh = true;
+        dispatchReviewReady(endExamAttempt);
+        return;
+      }
+      shouldRefresh = !endExamAttempt
+        || normalizeString(endExamAttempt.id, '') !== normalizeString(candidate.id, '')
+        || isAttemptReviewReady(endExamAttempt) !== isAttemptReviewReady(candidate);
+      endExamAttempt = candidate;
+    } catch (error) {
+      logger.warn('End-exam review CTA sync failed.', error);
+    } finally {
+      endExamAttemptLoading = false;
+      if (shouldRefresh && !destroyed) {
+        refresh();
+      }
+    }
+  }
+
   function readSnapshot() {
     const attempt = getAttempt();
     const adapterState = getAdapterState();
@@ -722,8 +925,9 @@ function createActiveExamPill(options = {}) {
       progress,
       progressText: formatActiveExamProgress(progress),
       trackingStatus: getTrackingStatus(),
-      keySummary: summarizeAnswerKeyCapture(answerKeyCapture, attempt),
+      keySummary: summarizeQBankKeys(attempt),
       reviewReady: isAttemptReviewReady(attempt),
+      endExamReview: deriveEndExamReviewState({ attempt, adapterState, window: adapterWindow, location: adapterWindow.location }),
     });
   }
 
@@ -740,6 +944,16 @@ function createActiveExamPill(options = {}) {
     dom.reviewButton.textContent = snapshot.reviewReady ? 'Review ready' : 'Review locked';
   }
 
+  function applyEndExamReviewCta(snapshot) {
+    const state = snapshot.endExamReview || deriveEndExamReviewState({ attempt: snapshot.attempt, adapterState: snapshot.adapterState, window: adapterWindow, location: adapterWindow.location });
+    endExamCta.root.hidden = !state.visible;
+    endExamCta.button.disabled = !state.enabled;
+    endExamCta.button.setAttribute('aria-disabled', state.enabled ? 'false' : 'true');
+    endExamCta.text.textContent = state.enabled
+      ? 'Your local review is ready. Open review mode in a new tab.'
+      : (snapshot.attempt ? END_EXAM_REVIEW_LOCKED_MESSAGE : 'No local helper attempt found for this exam.');
+  }
+
   function refresh() {
     if (destroyed) {
       return lastSnapshot;
@@ -753,9 +967,12 @@ function createActiveExamPill(options = {}) {
     dom.panel.hidden = !panelOpen;
     applyVisibility(snapshot.settings);
     applyReviewState(snapshot);
+    applyEndExamReviewCta(snapshot);
     renderSettingsDetails(adapterDocument, dom.detailContainer, snapshot);
-    dom.retryKeyButton.disabled = Boolean(snapshot.keySummary.active);
     dom.manualFinishButton.disabled = !snapshot.attempt || snapshot.reviewReady;
+    if (snapshot.endExamReview && snapshot.endExamReview.visible && !snapshot.endExamReview.enabled) {
+      void syncEndExamAttempt(snapshot);
+    }
     return snapshot;
   }
 
@@ -881,31 +1098,6 @@ function createActiveExamPill(options = {}) {
     }
   }
 
-  async function handleRetryKeys() {
-    const snapshot = refresh();
-    if (!answerKeyCapture || !hasFunction(answerKeyCapture, 'manualRetry')) {
-      setMessage(dom.message, 'Manual key retry unavailable.', 'warning');
-      return;
-    }
-    dom.retryKeyButton.disabled = true;
-    setMessage(dom.message, 'Retrying answer-key capture without navigation…', 'info');
-    try {
-      await answerKeyCapture.manualRetry({
-        attemptId: snapshot.attempt && snapshot.attempt.id,
-        expectedCount: snapshot.attempt && snapshot.attempt.questionCount,
-      });
-      if (trackingEngine && hasFunction(trackingEngine, 'flush')) {
-        await trackingEngine.flush('settings-key-retry');
-      }
-      setMessage(dom.message, 'Answer-key retry complete. See key status above.', 'info');
-    } catch (error) {
-      logger.warn('Manual key retry failed.', error);
-      setMessage(dom.message, `Answer-key retry failed: ${normalizeString(error && error.message, 'unknown error')}`, 'error');
-    } finally {
-      refresh();
-    }
-  }
-
   function handleVisibleSettingChange() {
     try {
       settingsStore.setPillVisible(Boolean(dom.visibleInput.checked));
@@ -948,18 +1140,27 @@ function createActiveExamPill(options = {}) {
     }
   }
 
+  function handleLocationChange() {
+    refresh();
+  }
+
   function attach() {
     const target = adapterDocument.body || adapterDocument.documentElement;
     target.appendChild(dom.root);
+    target.appendChild(endExamCta.root);
     dom.pillButton.addEventListener('click', togglePanel);
     dom.settingsButton.addEventListener('click', togglePanel);
     dom.visibleInput.addEventListener('change', handleVisibleSettingChange);
     dom.debugInput.addEventListener('change', handleDebugSettingChange);
     dom.reviewButton.addEventListener('click', handleReviewReady);
     dom.manualFinishButton.addEventListener('click', handleManualFinish);
-    dom.retryKeyButton.addEventListener('click', handleRetryKeys);
+    endExamCta.button.addEventListener('click', handleReviewReady);
     adapterDocument.addEventListener('pointerdown', handleDocumentPointerDown, true);
     adapterDocument.addEventListener('keydown', handleKeyDown, true);
+    if (hasFunction(adapterWindow, 'addEventListener')) {
+      adapterWindow.addEventListener('hashchange', handleLocationChange, true);
+      adapterWindow.addEventListener('popstate', handleLocationChange, true);
+    }
 
     if (trackingEngine && hasFunction(trackingEngine, 'onStatusChange')) {
       unsubscribeTracking = trackingEngine.onStatusChange(() => refresh());
@@ -992,11 +1193,18 @@ function createActiveExamPill(options = {}) {
     dom.debugInput.removeEventListener('change', handleDebugSettingChange);
     dom.reviewButton.removeEventListener('click', handleReviewReady);
     dom.manualFinishButton.removeEventListener('click', handleManualFinish);
-    dom.retryKeyButton.removeEventListener('click', handleRetryKeys);
+    endExamCta.button.removeEventListener('click', handleReviewReady);
     adapterDocument.removeEventListener('pointerdown', handleDocumentPointerDown, true);
     adapterDocument.removeEventListener('keydown', handleKeyDown, true);
+    if (hasFunction(adapterWindow, 'removeEventListener')) {
+      adapterWindow.removeEventListener('hashchange', handleLocationChange, true);
+      adapterWindow.removeEventListener('popstate', handleLocationChange, true);
+    }
     if (dom.root.parentNode) {
       dom.root.parentNode.removeChild(dom.root);
+    }
+    if (endExamCta.root.parentNode) {
+      endExamCta.root.parentNode.removeChild(endExamCta.root);
     }
   }
 
@@ -1019,11 +1227,19 @@ function createActiveExamPill(options = {}) {
 
 export {
   ACTIVE_EXAM_PILL_STYLE_ID,
+  END_EXAM_REVIEW_CTA_ID,
   REVIEW_READY_EVENT,
   MANUAL_FINISH_WARNING,
+  END_EXAM_REVIEW_LOCKED_MESSAGE,
   deriveActiveExamProgress,
   formatActiveExamProgress,
   isAttemptReviewReady,
+  isEndExamRoute,
+  isTerminalAdapterState,
+  deriveEndExamReviewState,
+  pickLatestEndExamAttempt,
+  buildEndExamCompletionAdapterState,
+  buildEndExamCompletionPatch,
   buildManualFinishAttemptPatch,
   createActiveExamPill,
 };

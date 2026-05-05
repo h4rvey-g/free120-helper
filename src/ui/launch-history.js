@@ -347,6 +347,13 @@ function injectLaunchHistoryStyles(adapterDocument) {
     .f120-launch-history__file-label {
       font: inherit;
     }
+    .f120-launch-history__trigger-group {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+      pointer-events: auto;
+    }
     .f120-launch-history__button {
       pointer-events: auto;
       border: 1px solid rgba(17, 24, 39, 0.18);
@@ -725,12 +732,20 @@ function buildLaunchHistoryDom(adapterDocument) {
     id: LAUNCH_HISTORY_ROOT_ID,
     attributes: { 'data-free120-helper': 'launch-history' },
   });
+  const triggerGroup = createElement(adapterDocument, 'div', { className: 'f120-launch-history__trigger-group' });
   const triggerButton = createElement(adapterDocument, 'button', {
     className: 'f120-launch-history__button',
     type: 'button',
     text: 'Free120 History',
     attributes: { 'aria-haspopup': 'dialog', 'aria-expanded': 'false' },
   });
+  const qbankCaptureButton = createElement(adapterDocument, 'button', {
+    className: 'f120-launch-history__button',
+    type: 'button',
+    text: 'Capture QBank',
+    attributes: { 'aria-haspopup': 'dialog' },
+  });
+  triggerGroup.append(triggerButton, qbankCaptureButton);
   const backdrop = createElement(adapterDocument, 'div', {
     className: 'f120-launch-history__backdrop',
     hidden: true,
@@ -822,11 +837,12 @@ function buildLaunchHistoryDom(adapterDocument) {
   });
 
   panel.append(header, toolbar, body, footer);
-  root.append(triggerButton, backdrop, panel);
+  root.append(triggerGroup, backdrop, panel);
 
   return Object.freeze({
     root,
     triggerButton,
+    qbankCaptureButton,
     backdrop,
     panel,
     closeButton,
@@ -848,6 +864,7 @@ function createLaunchHistory(options = {}) {
   const storage = options.storage || null;
   const logger = options.logger || { debug() {}, warn() {}, error() {} };
   const reviewLauncher = typeof options.reviewLauncher === 'function' ? options.reviewLauncher : null;
+  const qbankCache = options.qbankCache || null;
 
   if (!storage || typeof storage.listAttempts !== 'function') {
     throw new Error('Launch history requires storage with listAttempts().');
@@ -857,20 +874,23 @@ function createLaunchHistory(options = {}) {
   let panelOpen = false;
   let attempts = [];
   let refreshRequestId = 0;
+  let qbankCaptureInProgress = false;
 
   injectLaunchHistoryStyles(adapterDocument);
   const dom = buildLaunchHistoryDom(adapterDocument);
 
   function setBusy(busy) {
+    const disabled = Boolean(busy) || qbankCaptureInProgress;
     [
       dom.refreshButton,
       dom.exportHistoryButton,
       dom.exportFullButton,
       dom.importModeSelect,
       dom.importInput,
+      dom.qbankCaptureButton,
     ].forEach((element) => {
       if (element) {
-        element.disabled = Boolean(busy);
+        element.disabled = disabled;
       }
     });
   }
@@ -1085,6 +1105,54 @@ function createLaunchHistory(options = {}) {
     }
   }
 
+  async function captureQBank() {
+    setOpen(true);
+    if (!qbankCache || typeof qbankCache.captureAllAvailable !== 'function') {
+      setMessage(dom.message, 'QBank capture unavailable on this page.', 'error');
+      return null;
+    }
+    const warning = [
+      'Capture all available NBME/Free120 MCQ blocks into local IndexedDB?',
+      '',
+      'This creates local review-ready cache attempts with rendered question snapshots and answer keys.',
+      'Keep stored question content private. Do not export or share full backups.',
+      '',
+      'Continue?',
+    ].join('\n');
+    const confirmed = typeof adapterWindow.confirm === 'function' ? adapterWindow.confirm(warning) : false;
+    if (!confirmed) {
+      setMessage(dom.message, 'QBank capture cancelled.', 'info');
+      return null;
+    }
+    qbankCaptureInProgress = true;
+    setBusy(true);
+    try {
+      const result = await qbankCache.captureAllAvailable({
+        onProgress(progress) {
+          const current = coerceNonNegativeInteger(progress && progress.current, 0);
+          const total = coerceNonNegativeInteger(progress && progress.total, 0);
+          const label = normalizeString(progress && progress.definition && progress.definition.testDefinitionDisplayName, 'block');
+          setMessage(dom.message, `Capturing QBank ${current}/${total}: ${label}…`, 'info');
+        },
+      });
+      const captured = coerceNonNegativeInteger(result && result.capturedDefinitions, 0);
+      const failed = coerceNonNegativeInteger(result && result.failedDefinitions, 0);
+      const questions = coerceNonNegativeInteger(result && result.questionCount, 0);
+      const knownAnswers = coerceNonNegativeInteger(result && result.knownAnswerCount, 0);
+      const kind = failed ? (captured ? 'warning' : 'error') : 'success';
+      setMessage(dom.message, `QBank capture ${failed ? 'partial' : 'complete'}: ${captured} blocks, ${questions} questions, ${knownAnswers} answer keys${failed ? `, ${failed} failed` : ''}.`, kind);
+      await refreshAttempts();
+      return result;
+    } catch (error) {
+      logger.warn('QBank capture failed.', error);
+      setMessage(dom.message, `QBank capture failed: ${normalizeString(error && error.message, 'unknown error')}`, 'error');
+      return null;
+    } finally {
+      qbankCaptureInProgress = false;
+      setBusy(false);
+    }
+  }
+
   async function importHistoryFile(file) {
     if (!hasFunction(storage, 'importJson')) {
       setMessage(dom.message, 'Import unavailable.', 'error');
@@ -1152,6 +1220,10 @@ function createLaunchHistory(options = {}) {
       void exportFullBackup();
       return;
     }
+    if (action === 'capture-qbank') {
+      void captureQBank();
+      return;
+    }
     if (action === 'review') {
       void openAttemptReview(attemptId);
       return;
@@ -1191,6 +1263,7 @@ function createLaunchHistory(options = {}) {
     const target = adapterDocument.body || adapterDocument.documentElement;
     target.appendChild(dom.root);
     dom.triggerButton.addEventListener('click', togglePanel);
+    dom.qbankCaptureButton.addEventListener('click', captureQBank);
     dom.backdrop.addEventListener('click', handleBackdropClick);
     dom.panel.addEventListener('click', handlePanelClick);
     dom.importInput.addEventListener('change', handleImportChange);
@@ -1204,6 +1277,7 @@ function createLaunchHistory(options = {}) {
     }
     destroyed = true;
     dom.triggerButton.removeEventListener('click', togglePanel);
+    dom.qbankCaptureButton.removeEventListener('click', captureQBank);
     dom.backdrop.removeEventListener('click', handleBackdropClick);
     dom.panel.removeEventListener('click', handlePanelClick);
     dom.importInput.removeEventListener('change', handleImportChange);
@@ -1223,6 +1297,7 @@ function createLaunchHistory(options = {}) {
     exportHistoryOnly,
     exportFullBackup,
     importHistoryFile,
+    captureQBank,
     getState() {
       return Object.freeze({
         open: panelOpen,

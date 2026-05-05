@@ -123,6 +123,22 @@ const completeKeyResult = createAnswerKeyCaptureResult(createSyntheticAnswerKeyR
 assert.equal(completeKeyResult.summary.status, ANSWER_KEY_CAPTURE_STATUS.COMPLETE);
 assert.equal(completeKeyResult.summary.source, ANSWER_KEY_CAPTURE_SOURCE.ANGULAR_BULK);
 assert.deepEqual(completeKeyResult.correctAnswers, { q1: 'A', q2: 'C' });
+const qbankKeyResult = Object.freeze({
+  correctAnswers: Object.freeze({ q1: 'A', q2: 'C' }),
+  snapshotsByQuestionId: Object.freeze({
+    q1: Object.freeze({
+      questionId: 'q1',
+      renderedHtml: item.outerHTML,
+      promptHtml: '<div class="NBExposition">Synthetic stem</div>',
+      choices,
+      resourceUrls: Object.freeze(['https://example.test/synthetic.png']),
+      metadata: Object.freeze({ qbankCacheAttemptId: 'qbank-cache:synthetic', qbankCacheOriginalQuestionId: 'qbank-q1', qbankCacheMatchSource: 'component-medley' }),
+      snapshot: Object.freeze({ qbankCache: Object.freeze({ sessionId: 'synthetic-session' }) }),
+    }),
+  }),
+  summary: Object.freeze({ status: ANSWER_KEY_CAPTURE_STATUS.COMPLETE, source: 'qbank-cache', expectedCount: 2, knownCount: 2, unknownCount: 0 }),
+  source: Object.freeze({ status: ANSWER_KEY_CAPTURE_STATUS.COMPLETE, source: 'qbank-cache', matchedQuestionIds: Object.freeze(['q1', 'q2']), unmatchedQuestionIds: Object.freeze([]) }),
+});
 
 const partialKeyResult = createAnswerKeyCaptureResult(createSyntheticAnswerKeyRecords().slice(0, 1), createIncompleteAnswerKeyState(), { expectedCount: 3 });
 assert.equal(partialKeyResult.summary.status, ANSWER_KEY_CAPTURE_STATUS.PARTIAL);
@@ -243,7 +259,7 @@ const trackingSnapshot = createTrackingQuestionSnapshot({
   item: adapterState.currentItem,
   itemList: adapterState.itemList,
   timingByQuestionId: { q1: { totalMs: 1234 } },
-  answerKeyCaptureResult: completeKeyResult,
+  qbankCaptureResult: qbankKeyResult,
   root: item,
   document: fakeDocument,
 });
@@ -264,12 +280,13 @@ const patch = buildTrackingAttemptPatch(
   { responses: { q1: 'A', q2: 'B' }, changes: [{ questionId: 'q1', fromAnswerId: '', toAnswerId: 'A', item: adapterState.currentItem }] },
   { q1: { totalMs: 1234, blockNumber: 1, itemIndex: 1 } },
   ['q2'],
-  completeKeyResult,
+  qbankKeyResult,
   'synthetic-update'
 );
 assert.equal(patch.questionCount, 3);
 assert.equal(patch.responses.q2, 'B');
 assert.equal(patch.correctAnswers.q2, 'C');
+assert.equal(patch.answerKeyCapture.source, 'qbank-cache');
 assert.equal(patch.markedQuestionIds[0], 'q2');
 assert.equal(patch.source.progress.overall.answered, 2);
 assert.equal(patch.source.itemMetadataByQuestionId.q1.componentId, 'component-q1');

@@ -7,6 +7,7 @@
     "watch": "node scripts/build-userscript.mjs --watch",
     "test": "node scripts/test-all.mjs",
     "test:review": "node scripts/test-review.mjs",
+    "test:qbank": "node scripts/test-qbank.mjs",
     "test:storage": "node scripts/test-storage.mjs",
     "test:adapter": "node scripts/test-adapter.mjs",
     "test:scoring": "node scripts/test-scoring.mjs",

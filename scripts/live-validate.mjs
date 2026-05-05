@@ -121,11 +121,34 @@ async function main() {
     const result = await page.evaluate(async () => {
       const helper = window.Free120Helper;
       const state = helper.webfred.getLastState();
+      const qid = state.currentItem.questionId;
+      const qbankAttemptId = 'qbank-cache:USMLE:LIVE:Block1';
+      await helper.storage.upsertAttempt({
+        id: qbankAttemptId,
+        status: 'completed',
+        reviewReady: true,
+        questionIds: [qid],
+        questionCount: 1,
+        correctAnswers: { [qid]: 'A' },
+        answerKeyCapture: { status: 'complete', source: 'qbank-cache', knownCount: 1, expectedCount: 1, unknownCount: 0 },
+        source: { cacheKind: 'qbank', createdBy: 'qbank-cache-controller', itemMetadataByQuestionId: { [qid]: { componentId: state.currentItem.componentId, medleyId: state.currentItem.medleyId, blockNumber: 1, itemIndex: 1 } } },
+      });
+      await helper.storage.saveQuestionSnapshot({
+        attemptId: qbankAttemptId,
+        questionId: qid,
+        blockNumber: 1,
+        itemIndex: 1,
+        renderedHtml: state.currentContent.renderedHtml,
+        choices: state.currentContent.choices,
+        correctAnswerId: 'A',
+        metadata: { componentId: state.currentItem.componentId, medleyId: state.currentItem.medleyId },
+        snapshot: { qbankCache: { sessionId: 'live-validation' } },
+      });
       const startResult = await helper.tracking.start({ adapterState: state });
       await helper.tracking.flush('live-validation');
       const activeAttempt = helper.tracking.getAttempt() || (startResult && startResult.attempt) || null;
       const attempts = await helper.storage.listAttempts({ includeInProgress: true });
-      const keyResult = await helper.answerKeys.captureOnce({ adapterState: state, attemptId: activeAttempt && activeAttempt.id, expectedCount: 1 });
+      const keySummary = activeAttempt && activeAttempt.answerKeyCapture ? activeAttempt.answerKeyCapture : {};
       const exportEnvelope = await helper.storage.exportHistoryOnly();
       const exportedJson = JSON.stringify(exportEnvelope);
       const importResult = await helper.storage.importJson(exportEnvelope, { conflictMode: 'skip' });
@@ -150,8 +173,8 @@ async function main() {
         trackingStatus: helper.tracking.getStatus(),
         attempts: attempts.length,
         activeAttemptId: activeAttempt && activeAttempt.id,
-        keyStatus: keyResult.summary.status,
-        keyKnown: keyResult.summary.knownCount,
+        keyStatus: keySummary.status,
+        keyKnown: keySummary.knownCount,
         exportSnapshots: exportEnvelope.questionSnapshots.length,
         exportContentFree: !exportedJson.includes('Synthetic live-validation stem') && !exportedJson.includes('NBOptionInput'),
         importSkipped: importResult.skippedAttempts >= 1,

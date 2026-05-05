@@ -97,16 +97,14 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 - The script will not replace the official exam driver. It will observe state, store local snapshots, and render separate local history/review UI.
 - The helper will never send learner answers, scores, or question content to any external service.
 - The helper will not automate answer selection, submit answers, alter submitted answers, navigate between questions to scrape answers, or change NBME server calls.
-- Default active-exam behavior is test mode. Correct answers are captured when possible but never shown by the helper before completion.
+- Default active-exam behavior is test mode. Correct answers come from the launch-page QBank capture the user triggers before starting WebFRED and are never shown by the helper before completion.
 - No custom tutor mode will be built for v1. If the user uses the native Show Correct Answers option, the helper still tracks and reviews the attempt.
 - Native Show Correct Answers attempts are stored and scored the same as normal attempts. They are not separated in aggregate stats.
 - The active-exam UI is a small progress pill only. It shows answered count for the current block and the block number, e.g. `12/40 · Block 1`.
 - The progress pill counts answered questions only, not visited questions.
 - The progress pill can be hidden in settings.
-- The script will attempt to capture all correct answers immediately after WebFRED initializes and before the user answers questions, using in-page WebFRED services or bulk content data. It must not navigate the native exam to capture keys.
-- Correct-answer capture will use the site adapter and bulk content/service access first. Passive per-item capture is fallback. Hidden jump-through scraping is not default behavior.
-- If correct-answer capture is incomplete, the active-exam pill may show a subtle degraded tracking status in settings but must not change the requested progress text. The exam continues.
-- If correct-answer capture fails or is incomplete, the script automatically retries a limited number of times with backoff and exposes a manual retry action in settings. Retries must not navigate or show answers.
+- During WebFRED exams, the script will not run answer-key capture. It will resolve questions and correct answers only from local QBank cache attempts created by the launch-page QBank capture flow.
+- If the local QBank cache is missing or incomplete, the active-exam pill may show a subtle degraded QBank-key status in settings but must not change the requested progress text. The exam continues.
 - If some keys remain unknown at review time, scoring shows both minimum score over total and known-key score, e.g. `30/40 minimum · 30/38 graded · 2 unknown`.
 - The script will use a site adapter around WebFRED state. The adapter will prefer official in-page Angular state/services when available and fall back to DOM parsing when needed.
 - Question identity will use stable NBME identifiers: exam program, exam name/section, component id, and medley id. Block number and item index are stored only as attempt-position metadata because order may shuffle.
@@ -145,19 +143,19 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 
 - Tests should validate external behavior rather than implementation details: what the user sees, what is stored, and how grading/history behave.
 - Parsing tests should use synthetic HTML fixtures that mimic the WebFRED DOM shape without committing full NBME question content.
-- The site adapter should be unit tested for extracting exam identity, launched scope, block metadata, component id, medley id, current item, answer state, marks, annotations, and correct-answer metadata from mocked Angular state and DOM fallback fixtures.
-- The bulk answer-key capture flow should be unit tested for complete key capture, partial key capture, retry behavior, manual retry behavior, and no-navigation guarantees.
-- The question extractor should be unit tested for single-answer MCQ items, omitted items, marked items, answer-visible native mode, missing correct-answer metadata, media/resource URLs, notes, highlights, strikeouts, and changed DOM class names.
+- The site adapter should be unit tested for extracting exam identity, launched scope, block metadata, component id, medley id, current item, answer state, marks, annotations, and DOM fallback fixtures.
+- The QBank cache flow should be unit tested for launch-page capture, local key resolution, missing/incomplete cache status, and no active-exam key capture.
+- The question extractor should be unit tested for single-answer MCQ items, omitted items, marked items, QBank-cached content, missing correct-answer metadata, media/resource URLs, notes, highlights, strikeouts, and changed DOM class names.
 - The grader should be unit tested for correct, incorrect, omitted, unknown, malformed answer states, and incomplete key scoring with minimum-score plus known-key score output.
 - The attempt store should be unit tested for creating attempts, updating responses, recording answer-change timeline, recording rough timing, completing attempts, preserving repeated attempts, migrating schema versions, exporting with and without question content, importing, deleting attempts, and clearing all data.
 - The UI state reducer or controller should be unit tested for pill progress formatting, pill visibility setting, review-ready state, filter selection, summary counts, per-block breakdown, history sorting, attempt selection, export/import flow, and delete confirmations.
 - Review-tab generation should be tested with synthetic attempts to verify the blob HTML renders the existing exam-page shell, full and compact modes, filters, left-nav status icons, option-row correct/incorrect icons, answer highlighting, answer timeline, below-question timing, and annotations.
-- Playwright smoke tests should validate live workflows on the official site: launch Step 1 Block 1, verify answer-key capture attempts, answer at least one item, navigate, mark an item, use notes/highlights/strikeouts where possible, end or simulate completion, click review-ready, open new review tab, and verify score/status display plus existing-page review markers in `ol#leftnav > li`, `ol.options > li.stContext`, and the below-question time row.
+- Playwright smoke tests should validate live workflows on the official site: launch Step 1 Block 1, run QBank capture on the launch page, answer at least one item, navigate, mark an item, use notes/highlights/strikeouts where possible, end or simulate completion, click review-ready, open new review tab, and verify score/status display plus existing-page review markers in `ol#leftnav > li`, `ol.options > li.stContext`, and the below-question time row.
 - Playwright smoke tests should run both with native Show Correct Answers disabled and enabled, because the helper must support both workflows and count them the same in history.
 - Playwright tests should verify the active-exam pill displays answered-only progress as `12/40 · Block 1` and can be hidden in settings.
 - Playwright tests should verify all-block mode does not unlock review after Block 1 and only unlocks after all launched blocks are complete or after explicit manual finish warning.
 - Playwright tests should verify the script does not break native Next, Previous, Mark, End Block, Calculator, Lab Values, Notes, Reverse Color, and Text Zoom controls.
-- Playwright tests should verify the script does not navigate the native WebFRED app for key capture or review rendering.
+- Playwright tests should verify the script does not navigate the native WebFRED app for key lookup or review rendering.
 - Playwright tests should verify refresh recovery for an in-progress attempt.
 - Playwright tests should verify export/import produces equivalent history, with default export excluding full question content and full-backup export including content only after explicit opt-in.
 - Live-site tests should avoid storing official question content in repository fixtures. Assertions should use structural selectors and synthetic local fixtures wherever possible.
@@ -224,14 +222,13 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 - [x] Add DOM fallback extraction for current item state if Angular services are unavailable.
 - [x] Add degraded-mode reporting when required state cannot be trusted.
 
-### Phase 4: Answer-key capture
+### Phase 4: QBank capture
 
-- [x] Implement bulk answer-key/content capture via in-page WebFRED service/API access after WebFRED initialization.
-- [x] Parse correct-answer metadata from returned content without rendering or revealing answers.
-- [x] Retry key capture automatically with limited exponential backoff.
-- [x] Add manual retry in settings.
-- [x] Persist key-capture status per attempt: complete, partial, failed, unknown count.
-- [x] Guarantee key capture does not navigate, answer, submit, or mutate native exam state.
+- [x] Implement launch-page QBank capture that creates local cache attempts with rendered snapshots and correct answers.
+- [x] Parse correct-answer metadata from cached content without rendering or revealing answers during active exams.
+- [x] Remove active-exam answer-key capture, retry, and manual retry paths.
+- [x] Persist QBank-derived key status per attempt: complete, partial, failed, unknown count.
+- [x] Guarantee active-exam tracking does not navigate, answer, submit, mutate native exam state, or capture keys.
 
 ### Phase 5: Tracking engine
 
@@ -248,7 +245,7 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 - [x] Split the implemented monolithic userscript into ES modules under `src/core`, `src/storage`, `src/webfred`, `src/tracking`, `src/answer-keys`, and `src/runtime`.
 - [x] Preserve the Tampermonkey metadata block in `src/userscript.meta.txt` and inject it into the bundled release artifact.
 - [x] Add an esbuild pipeline that bundles `src/main.js` into one release file at `dist/free120-helper.user.js` with IIFE output and no code splitting.
-- [x] Keep module boundaries aligned with implemented PRD responsibilities: constants/settings/logger, IndexedDB attempt store, WebFRED adapter, answer-key capture, tracking engine, and runtime bootstrap.
+- [x] Keep module boundaries aligned with implemented PRD responsibilities: constants/settings/logger, IndexedDB attempt store, WebFRED adapter, QBank capture/cache lookup, tracking engine, and runtime bootstrap.
 - [x] Keep generated build artifacts out of source control while keeping release source modules editable and testable.
 
 ### Phase 7: Active-exam UI
@@ -299,8 +296,8 @@ Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](pl
 
 ### Phase 11: Testing and live validation
 
-- [x] Add synthetic fixtures for WebFRED-like MCQ content, answer-key metadata, annotations, and incomplete-key states.
-- [x] Unit test storage, migrations, adapter parsing, key capture parsing, extractor, grader, scoring, and review generation.
+- [x] Add synthetic fixtures for WebFRED-like MCQ content, QBank key metadata, annotations, and incomplete-key states.
+- [x] Unit test storage, migrations, adapter parsing, QBank cache lookup, extractor, grader, scoring, and review generation.
 - [x] Add module-level tests for exported pure helpers before further splitting large implemented modules.
 - [x] Add a build check that runs esbuild and `node --check dist/free120-helper.user.js` before release.
 - [x] Use Playwright CLI to validate live Step 1 single-block workflow without native Show Correct Answers.
@@ -312,7 +309,7 @@ Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](pl
 
 ### Phase 12: Hardening and release
 
-- Add fail-safe warnings for unsupported pages, unavailable WebFRED state, incomplete key capture, storage errors, and import validation errors.
+- Add fail-safe warnings for unsupported pages, unavailable WebFRED state, missing/incomplete QBank cache, storage errors, and import validation errors.
 - Add privacy notice and local-data notice.
 - Add install/update notes for Tampermonkey, pointing users at the bundled `dist/free120-helper.user.js` release artifact.
 - Run manual QA in Chrome with Tampermonkey using the bundled output, not source modules.

@@ -11,10 +11,14 @@ import {
   shouldManualFinishCompleteAttempt,
 } from '../src/scoring/grader.js';
 import {
+  buildEndExamCompletionPatch,
   buildManualFinishAttemptPatch,
   deriveActiveExamProgress,
+  deriveEndExamReviewState,
   formatActiveExamProgress,
   isAttemptReviewReady,
+  isEndExamRoute,
+  pickLatestEndExamAttempt,
 } from '../src/ui/active-exam-pill.js';
 import { createSyntheticAdapterState, createSyntheticAttempt } from './test-utils/fixtures.mjs';
 
@@ -111,6 +115,39 @@ assert.deepEqual(progress, { blockNumber: 1, answered: 2, total: 3, source: 'sta
 assert.equal(formatActiveExamProgress(progress), '2/3 · Block 1');
 assert.equal(isAttemptReviewReady({ status: ATTEMPT_STATUS.COMPLETED }), true);
 assert.equal(isAttemptReviewReady({ status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false }), false);
+assert.equal(isEndExamRoute(new URL('https://orientation.nbme.org/webfred/#!/endExam')), true);
+assert.equal(isEndExamRoute(new URL('https://orientation.nbme.org/webfred/#/main')), false);
+assert.deepEqual(deriveEndExamReviewState({
+  attempt: { status: ATTEMPT_STATUS.COMPLETED },
+  adapterState: createSyntheticAdapterState(),
+  location: new URL('https://orientation.nbme.org/webfred/#!/endExam'),
+}), {
+  visible: true,
+  enabled: true,
+  routeMatched: true,
+  terminalDetected: false,
+  reviewReady: true,
+  reason: 'end-exam-route',
+});
+assert.equal(deriveEndExamReviewState({
+  attempt: { status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false },
+  adapterState: completeTerminalState,
+  location: new URL('https://orientation.nbme.org/webfred/#/main'),
+}).visible, true);
+assert.equal(deriveEndExamReviewState({
+  attempt: { status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false },
+  adapterState: createSyntheticAdapterState(),
+  location: new URL('https://orientation.nbme.org/webfred/#/main'),
+}).visible, false);
+assert.equal(pickLatestEndExamAttempt([
+  { id: 'old', status: ATTEMPT_STATUS.IN_PROGRESS, updatedAt: '2026-05-05T01:00:00.000Z' },
+  { id: 'ready', status: ATTEMPT_STATUS.COMPLETED, updatedAt: '2026-05-05T00:00:00.000Z' },
+]).id, 'ready');
+const endExamPatch = buildEndExamCompletionPatch(allBlockAttempt, createSyntheticAdapterState({ blockCount: 3 }), { completedAt: '2026-05-05T03:00:00.000Z' });
+assert.equal(endExamPatch.reviewReady, true);
+assert.equal(endExamPatch.status, ATTEMPT_STATUS.COMPLETED);
+assert.equal(endExamPatch.source.completion.reason, 'native-end-exam-route');
+assert.deepEqual(endExamPatch.source.completion.completedBlockNumbers, [1, 2, 3]);
 const manualPatch = buildManualFinishAttemptPatch(attempt, progress, { adapterState: createSyntheticAdapterState(), finishedAt: '2026-05-05T02:00:00.000Z' });
 assert.equal(manualPatch.reviewReady, true);
 assert.equal(manualPatch.status, ATTEMPT_STATUS.COMPLETED);

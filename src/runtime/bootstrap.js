@@ -49,16 +49,6 @@ function bootstrapWebfredAdapter(services) {
           .catch((error) => {
             services.logger.warn('Tracking engine failed.', error);
           });
-        return;
-      }
-      if (services.answerKeyCapture) {
-        services.answerKeyCapture.startAutoCapture({ adapterState: state })
-          .then((result) => {
-            services.logger.debug('Answer-key capture finished.', result && result.summary ? result.summary : result);
-          })
-          .catch((error) => {
-            services.logger.warn('Answer-key capture failed.', error);
-          });
       }
     })
     .catch((error) => {
