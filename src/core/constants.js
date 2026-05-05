@@ -116,6 +116,7 @@ const ANSWER_KEY_CAPTURE_STATUS = Object.freeze({
 const ANSWER_KEY_CAPTURE_SOURCE = Object.freeze({
   ANGULAR_BULK: 'angular-bulk',
   DOM_CURRENT_ITEM: 'dom-current-item',
+  DOM_KEY_PAGE: 'dom-key-page',
   MIXED: 'mixed',
   UNAVAILABLE: 'unavailable',
 });
@@ -125,6 +126,7 @@ const ANSWER_KEY_CAPTURE_CONFIG = Object.freeze({
   BASE_RETRY_DELAY_MS: 750,
   MAX_RETRY_DELAY_MS: 6000,
   READ_ONLY_METHOD_TIMEOUT_MS: 1500,
+  BULK_CONTENT_TIMEOUT_MS: 6000,
   MAX_READ_ONLY_METHOD_CALLS: 40,
   MAX_SCAN_OBJECTS: 1200,
   MAX_SCAN_DEPTH: 5,
@@ -151,13 +153,14 @@ const TRACKING_ENGINE_CONFIG = Object.freeze({
 });
 
 const WEBFRED_ANGULAR_SERVICE_CANDIDATES = Object.freeze([
+  'dataService', 'DataService', 'fredDataService', 'FredDataService', 'webfredDataService', 'WebFredDataService',
   'ExamService', 'examService', 'ExamState', 'examState', 'ExamDataService', 'examDataService',
-  'BlockService', 'blockService', 'NavigationService', 'navigationService', 'navService',
+  'BlockService', 'blockService', 'NavigationService', 'navigationService', 'navService', 'nav',
   'ItemService', 'itemService', 'CurrentItemService', 'currentItemService', 'ItemResponseService',
   'ResponseService', 'responseService', 'AnswerService', 'answerService', 'answersService',
   'ContentService', 'contentService', 'MedleyService', 'medleyService', 'ConfigService',
   'configService', 'ConfigurationService', 'configurationService', 'SessionService',
-  'sessionService', '$state', '$stateParams', '$rootScope', '$location',
+  'sessionService', 'examStatus', 'itemStatus', 'scores', 'scoreService', '$state', '$stateParams', '$rootScope', '$location',
 ]);
 
 const launchPagePattern = new RegExp(SCRIPT.URL_PATTERNS.LAUNCH_PAGE, 'i');

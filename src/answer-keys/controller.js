@@ -1,4 +1,4 @@
-import { STORAGE_KEYS, ATTEMPT_STATUS, ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAPTURE_SOURCE, ANSWER_KEY_CAPTURE_CONFIG } from '../core/constants.js';
+import { STORAGE_KEYS, ATTEMPT_STATUS, WEBFRED_ADAPTER_STATUS, ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAPTURE_SOURCE, ANSWER_KEY_CAPTURE_CONFIG } from '../core/constants.js';
 import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
 import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
@@ -20,6 +20,7 @@ import {
   extractQuestionIdentityFromDom,
   extractExamIdentityFromDom,
   findCurrentDomItemRoot,
+  findKeyNavigationItem,
   collectAngularStateRoots,
   safeNowMs,
   createEmptyWebfredState,
@@ -56,6 +57,7 @@ function isAnswerKeyStatusComplete(status) {
 function isReadOnlyMethodName(name) {
   const normalized = normalizeString(name, '').toLowerCase();
   if (!normalized
+    || ['getsessionid', 'getcontentbulk'].includes(normalized)
     || /navigate|route|go|next|prev|previous|select|submit|finish|end|save|put|post|delete|remove|clear|update|mark|flag|note|highlight|strike|timer|start|stop|reset|show|reveal|display|open|close|launch|loaditem|goto/.test(normalized)
     || normalized.startsWith('set')
     || /(^|[._-])set([._-]|$)/.test(normalized)) {
@@ -705,8 +707,132 @@ function parseHtmlFragmentForAnswerKey(rawHtml, adapterDocument) {
   }
 }
 
+function normalizeKeyPageAnswerId(value) {
+  const normalized = normalizeAnswerKeyString(value).toUpperCase();
+  return /^[A-H]$/.test(normalized) ? normalized : '';
+}
+
+function addParsedKeyPagePair(pairs, seen, itemIndex, answerId) {
+  const normalizedIndex = coercePositiveInteger(itemIndex, 0);
+  const normalizedAnswerId = normalizeKeyPageAnswerId(answerId);
+  if (!normalizedIndex || !normalizedAnswerId || seen.has(normalizedIndex)) {
+    return;
+  }
+  seen.add(normalizedIndex);
+  pairs.push(Object.freeze({ itemIndex: normalizedIndex, correctAnswerId: normalizedAnswerId }));
+}
+
+function parseAnswerKeyPairsFromText(text) {
+  const normalizedText = normalizeString(text, '').replace(/\u00a0/g, ' ').replace(/[：]/g, ':');
+  if (!normalizedText || !/\b(?:key|answer|correct|\d+\s*[.)\]:-]\s*[A-H])\b/i.test(normalizedText)) {
+    return [];
+  }
+  const pairs = [];
+  const seen = new Set();
+  const compactText = normalizedText.replace(/\s+/g, ' ').trim();
+  const patterns = [
+    /(?:^|[^\d])(?:q(?:uestion)?\s*)?(\d{1,3})\s*(?:[.)\]:-]|\s)\s*(?:answer\s*)?([A-H])(?=$|[^A-Za-z])/gi,
+    /(?:^|[^\d])(?:q(?:uestion)?\s*)?(\d{1,3})\s+(?:correct\s+answer|answer|key)\s*(?:is|=|:|-)?\s*([A-H])(?=$|[^A-Za-z])/gi,
+  ];
+  patterns.forEach((pattern) => {
+    let match;
+    while ((match = pattern.exec(compactText)) !== null) {
+      addParsedKeyPagePair(pairs, seen, match[1], match[2]);
+    }
+  });
+  return pairs.sort((left, right) => left.itemIndex - right.itemIndex);
+}
+
+function parseAnswerKeyPairsFromRoot(root) {
+  if (!root) {
+    return [];
+  }
+  const pairs = [];
+  const seen = new Set();
+  const addPairs = (text) => {
+    parseAnswerKeyPairsFromText(text).forEach((pair) => {
+      addParsedKeyPagePair(pairs, seen, pair.itemIndex, pair.correctAnswerId);
+    });
+  };
+  addPairs(root.textContent || '');
+  if (typeof root.querySelectorAll === 'function') {
+    Array.from(root.querySelectorAll('tr, li, p, div, span')).forEach((element) => addPairs(element.textContent || ''));
+  }
+  return pairs.sort((left, right) => left.itemIndex - right.itemIndex);
+}
+
+function isCurrentNavigationElement(element) {
+  if (!element) {
+    return false;
+  }
+  const className = normalizeString(element.className, '').toLowerCase();
+  return className.includes('currentitem') || className.includes('current') || safeAttribute(element, 'aria-current') === 'true';
+}
+
+function addUniqueDomRoot(roots, root) {
+  if (root && !roots.includes(root)) {
+    roots.push(root);
+  }
+}
+
+function collectKeyPageRoots(adapterDocument) {
+  const roots = [];
+  const keyNavigationItem = findKeyNavigationItem(adapterDocument);
+  addUniqueDomRoot(roots, keyNavigationItem);
+  if (keyNavigationItem && isCurrentNavigationElement(keyNavigationItem) && adapterDocument && typeof adapterDocument.querySelector === 'function') {
+    ['article#content', 'section#item', 'main', 'body'].forEach((selector) => addUniqueDomRoot(roots, adapterDocument.querySelector(selector)));
+  }
+  if (adapterDocument && typeof adapterDocument.querySelectorAll === 'function') {
+    Array.from(adapterDocument.querySelectorAll('[id*="key"], [id*="Key"], [class*="key"], [class*="Key"], [aria-label*="Key"], [title*="Key"]'))
+      .forEach((element) => addUniqueDomRoot(roots, element));
+  }
+  return roots;
+}
+
+function createAnswerKeyRecordFromKeyPagePair(pair, adapterState, adapterWindow, adapterDocument, rootIndex = 0, captureSource = ANSWER_KEY_CAPTURE_SOURCE.DOM_KEY_PAGE) {
+  const itemList = adapterState && Array.isArray(adapterState.itemList) ? adapterState.itemList : [];
+  const fallback = itemList[pair.itemIndex - 1] || null;
+  const examIdentity = adapterState && adapterState.examIdentity ? adapterState.examIdentity : extractExamIdentityFromDom(adapterDocument, adapterWindow);
+  const identity = fallback || buildQuestionIdentity({
+    examProgram: examIdentity && examIdentity.program,
+    examName: examIdentity && examIdentity.examName,
+    examSection: examIdentity && examIdentity.section,
+    blockNumber: (adapterState && adapterState.currentBlock) || 1,
+    itemIndex: pair.itemIndex,
+    itemId: pair.itemIndex,
+  });
+  const questionId = normalizeString(identity.questionId, '');
+  return Object.freeze({
+    questionId,
+    componentId: normalizeString(identity.componentId, ''),
+    medleyId: normalizeString(identity.medleyId, ''),
+    blockNumber: coercePositiveInteger(identity.blockNumber, (adapterState && adapterState.currentBlock) || 0),
+    itemIndex: pair.itemIndex,
+    correctAnswerId: pair.correctAnswerId,
+    selectedAnswerId: normalizeString(identity.selectedAnswerId, ''),
+    choices: Object.freeze([]),
+    identitySource: normalizeString(identity.identitySource, fallback ? 'item-list' : 'key-page-index'),
+    captureSource,
+    capturedAt: nowIso(),
+    confidence: questionId ? 'high' : 'medium',
+    contentHash: stableHashString(`key-page:${rootIndex}:${pair.itemIndex}:${pair.correctAnswerId}:${questionId}`),
+  });
+}
+
+function collectDomKeyPageAnswerKeyRecords(adapterWindow, adapterDocument, adapterState) {
+  const records = [];
+  collectKeyPageRoots(adapterDocument).forEach((root, rootIndex) => {
+    parseAnswerKeyPairsFromRoot(root).forEach((pair) => {
+      records.push(createAnswerKeyRecordFromKeyPagePair(pair, adapterState, adapterWindow, adapterDocument, rootIndex));
+    });
+  });
+  return records;
+}
+
 function collectDomAnswerKeyRecords(adapterWindow, adapterDocument, adapterState) {
   const records = [];
+  records.push(...collectDomKeyPageAnswerKeyRecords(adapterWindow, adapterDocument, adapterState));
+
   const currentRoot = findCurrentDomItemRoot(adapterDocument, adapterWindow);
   const currentRecord = extractAnswerKeyRecordFromDomRoot(currentRoot, adapterDocument, adapterWindow, {
     fallback: adapterState && adapterState.currentItem,
@@ -736,7 +862,26 @@ function looksLikeAnswerKeyHtmlString(value, key = '') {
   if (!html || html.length > ANSWER_KEY_CAPTURE_CONFIG.MAX_HTML_PARSE_CHARS || !/[<][a-zA-Z]/.test(html)) {
     return false;
   }
-  return /correct|answer-key|keyed|NBOptionInput|stContext|ol\.options|data-answer|data-key/i.test(`${key} ${html}`);
+  return /correct|answer[-_\s]*key|keyed|NBOptionInput|stContext|ol\.options|data-answer|data-key/i.test(`${key} ${html}`);
+}
+
+function stripHtmlForAnswerKeyText(value) {
+  return normalizeString(value, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&[a-zA-Z0-9#]+;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function looksLikeAnswerKeyPageHtmlString(value, key = '') {
+  const text = stripHtmlForAnswerKeyText(value);
+  if (!text || !/(?:answer[-_\s]*key|\bkey\b)/i.test(`${key} ${text}`)) {
+    return false;
+  }
+  return /(?:^|[^\d])(?:q(?:uestion)?\s*)?\d{1,3}\s*(?:[.)\]:-]|\s)\s*(?:answer\s*)?[A-H](?=$|[^A-Za-z])/i.test(text);
 }
 
 function collectHtmlAnswerKeyRecordsFromValue(rootValue, adapterWindow, adapterDocument, adapterState, options = {}) {
@@ -757,6 +902,18 @@ function collectHtmlAnswerKeyRecordsFromValue(rootValue, adapterWindow, adapterD
     if (typeof current.value === 'string') {
       if (looksLikeAnswerKeyHtmlString(current.value, current.key)) {
         const parsedRoot = parseHtmlFragmentForAnswerKey(current.value, adapterDocument);
+        if (looksLikeAnswerKeyPageHtmlString(current.value, current.key)) {
+          parseAnswerKeyPairsFromText(stripHtmlForAnswerKeyText(current.value)).forEach((pair, pairIndex) => {
+            records.push(createAnswerKeyRecordFromKeyPagePair(
+              pair,
+              adapterState,
+              adapterWindow,
+              adapterDocument,
+              pairIndex,
+              options.captureSource || ANSWER_KEY_CAPTURE_SOURCE.ANGULAR_BULK
+            ));
+          });
+        }
         const parsedRecord = parsedRoot ? extractAnswerKeyRecordFromDomRoot(parsedRoot, adapterDocument, adapterWindow, {
           fallback: current.fallback,
         }) : null;
@@ -814,7 +971,15 @@ function scoreAnswerKeyRecord(record) {
     return 0;
   }
   const confidenceScore = record.confidence === 'high' ? 40 : (record.confidence === 'medium' ? 25 : 10);
-  const sourceScore = record.captureSource === ANSWER_KEY_CAPTURE_SOURCE.ANGULAR_BULK ? 15 : 5;
+  const sourceScore = (() => {
+    if (record.captureSource === ANSWER_KEY_CAPTURE_SOURCE.ANGULAR_BULK) {
+      return 15;
+    }
+    if (record.captureSource === ANSWER_KEY_CAPTURE_SOURCE.DOM_KEY_PAGE) {
+      return 12;
+    }
+    return 5;
+  })();
   const identityScore = record.questionId ? 20 : (record.componentId || record.medleyId ? 10 : 0);
   const choiceScore = Array.isArray(record.choices) && record.choices.length ? 5 : 0;
   return confidenceScore + sourceScore + identityScore + choiceScore;
@@ -889,8 +1054,50 @@ function mergeAnswerKeyRecords(rawRecords, adapterState) {
   });
 }
 
+function getAnswerKeyCaptureFailureReason(status, source, knownCount, expectedCount, allRecordCount, adapterState, options = {}) {
+  if (status !== ANSWER_KEY_CAPTURE_STATUS.FAILED) {
+    return '';
+  }
+  if (normalizeString(options.lastError, '')) {
+    return 'capture-error';
+  }
+  if (allRecordCount > 0 && knownCount === 0) {
+    return 'answer-key-identity-mismatch';
+  }
+  if (expectedCount > 0 && knownCount === 0 && allRecordCount === 0) {
+    return 'no-correct-answer-metadata';
+  }
+  if (adapterState && normalizeString(adapterState.status, '') === WEBFRED_ADAPTER_STATUS.UNAVAILABLE) {
+    return 'webfred-state-unavailable';
+  }
+  if (source === ANSWER_KEY_CAPTURE_SOURCE.UNAVAILABLE) {
+    return 'answer-key-source-unavailable';
+  }
+  return 'no-answer-keys-captured';
+}
+
+function describeAnswerKeyCaptureFailure(reason) {
+  switch (reason) {
+    case 'capture-error':
+      return 'capture error';
+    case 'webfred-state-unavailable':
+      return 'WebFRED state unavailable';
+    case 'no-correct-answer-metadata':
+      return 'no correct-answer metadata detected';
+    case 'answer-key-identity-mismatch':
+      return 'captured key records did not match current item identities';
+    case 'answer-key-source-unavailable':
+      return 'answer-key source unavailable';
+    case 'no-answer-keys-captured':
+      return 'no answer keys captured';
+    default:
+      return '';
+  }
+}
+
 function summarizeAnswerKeyCapture(mergedRecords, adapterState, options = {}) {
   const records = mergedRecords && Array.isArray(mergedRecords.records) ? mergedRecords.records : [];
+  const allRecordCount = mergedRecords && Array.isArray(mergedRecords.allRecords) ? mergedRecords.allRecords.length : records.length;
   const itemList = adapterState && Array.isArray(adapterState.itemList) ? adapterState.itemList : [];
   const expectedCount = coercePositiveInteger(
     options.expectedCount,
@@ -914,6 +1121,7 @@ function summarizeAnswerKeyCapture(mergedRecords, adapterState, options = {}) {
     }
     return ANSWER_KEY_CAPTURE_STATUS.FAILED;
   })();
+  const failureReason = getAnswerKeyCaptureFailureReason(status, source, knownCount, expectedCount, allRecordCount, adapterState, options);
 
   return Object.freeze({
     status,
@@ -922,6 +1130,15 @@ function summarizeAnswerKeyCapture(mergedRecords, adapterState, options = {}) {
     expectedCount,
     knownCount,
     unknownCount,
+    recordCount: records.length,
+    allRecordCount,
+    adapterStatus: normalizeString(adapterState && adapterState.status, ''),
+    adapterSource: normalizeString(adapterState && adapterState.source, ''),
+    adapterDegradedReasons: Object.freeze(Array.isArray(adapterState && adapterState.degradedReasons)
+      ? adapterState.degradedReasons.map((reason) => normalizeString(reason, '')).filter(Boolean)
+      : []),
+    failureReason,
+    failureDetail: describeAnswerKeyCaptureFailure(failureReason),
     capturedAt: nowIso(),
     retryCount: coercePositiveInteger(options.retryCount, 0),
     maxAutoRetries: ANSWER_KEY_CAPTURE_CONFIG.MAX_AUTO_RETRIES,
@@ -1053,6 +1270,48 @@ function collectReadOnlyMethodCandidates(roots, options = {}) {
   return methods;
 }
 
+async function collectBulkContentAnswerKeyRecords(adapterWindow, adapterDocument, adapterState, roots, options = {}, logger) {
+  const records = [];
+  const seen = [];
+  const candidates = (Array.isArray(roots) ? roots : []).filter((root) => {
+    if (!isReadableObject(root) || isDomElement(root)) {
+      return false;
+    }
+    let method;
+    try {
+      method = root.getContentBulk;
+    } catch (_error) {
+      method = null;
+    }
+    if (typeof method !== 'function' || method.length !== 0 || seen.some((entry) => entry.root === root || entry.method === method)) {
+      return false;
+    }
+    seen.push({ root, method });
+    return true;
+  });
+
+  for (const service of candidates) {
+    try {
+      const invoked = service.getContentBulk.call(service);
+      const bulkContent = await resolveMaybePromise(
+        invoked,
+        adapterWindow,
+        ANSWER_KEY_CAPTURE_CONFIG.BULK_CONTENT_TIMEOUT_MS,
+        undefined
+      );
+      if (bulkContent !== undefined && bulkContent !== null && bulkContent !== service && !isDomElement(bulkContent)) {
+        records.push(...collectHtmlAnswerKeyRecordsFromValue(bulkContent, adapterWindow, adapterDocument, adapterState, options));
+      }
+    } catch (error) {
+      if (logger) {
+        logger.debug('Bulk content answer-key capture failed.', error);
+      }
+    }
+  }
+
+  return records;
+}
+
 async function collectReadOnlyMethodResults(adapterWindow, roots, logger) {
   const results = [];
   const methods = collectReadOnlyMethodCandidates(roots);
@@ -1105,6 +1364,7 @@ async function collectAngularAnswerKeyRecords(adapterWindow, adapterDocument, an
     records.push(...collectAnswerKeyRecordsFromValue(root, baseOptions));
     records.push(...collectHtmlAnswerKeyRecordsFromValue(root, adapterWindow, adapterDocument, adapterState, baseOptions));
   });
+  records.push(...await collectBulkContentAnswerKeyRecords(adapterWindow, adapterDocument, adapterState, roots, baseOptions, logger));
 
   const methodResults = await collectReadOnlyMethodResults(adapterWindow, roots, logger);
   methodResults.forEach((result) => {
@@ -1173,6 +1433,30 @@ function verifyAnswerKeyCaptureSafety(beforeSnapshot, afterSnapshot) {
   }
 }
 
+function isUsableAnswerKeyAdapterState(state) {
+  return Boolean(state && (
+    state.status === WEBFRED_ADAPTER_STATUS.READY
+    || state.status === WEBFRED_ADAPTER_STATUS.DEGRADED
+    || state.currentItem
+    || (Array.isArray(state.itemList) && state.itemList.length)
+  ));
+}
+
+function readFreshAdapterStateForCapture(adapter, fallbackState, logger) {
+  if (!adapter || typeof adapter.readState !== 'function') {
+    return fallbackState;
+  }
+  try {
+    const freshState = adapter.readState();
+    return isUsableAnswerKeyAdapterState(freshState) ? freshState : fallbackState;
+  } catch (error) {
+    if (logger) {
+      logger.debug('Could not refresh WebFRED state before answer-key capture.', error);
+    }
+    return fallbackState;
+  }
+}
+
 async function captureAnswerKeysOnce(options = {}) {
   const adapter = options.webfredAdapter;
   const adapterWindow = options.window || window;
@@ -1183,12 +1467,13 @@ async function captureAnswerKeysOnce(options = {}) {
     throw createAnswerKeyCaptureError('WebFRED adapter is required for answer-key capture.');
   }
 
-  const adapterState = options.adapterState || await adapter.waitForInitialization();
+  const initializedState = options.adapterState || await adapter.waitForInitialization();
+  const adapterState = readFreshAdapterStateForCapture(adapter, initializedState, logger);
   const beforeSafety = createAnswerKeySafetySnapshot(adapterWindow, adapterState);
   const angularServices = typeof adapter.getAngularServices === 'function' ? adapter.getAngularServices() : null;
   const angularRecords = await collectAngularAnswerKeyRecords(adapterWindow, adapterDocument, angularServices, adapterState, logger);
   const domRecords = collectDomAnswerKeyRecords(adapterWindow, adapterDocument, adapterState);
-  const afterState = typeof adapter.readState === 'function' ? adapter.readState() : adapterState;
+  const afterState = readFreshAdapterStateForCapture(adapter, adapterState, logger);
   verifyAnswerKeyCaptureSafety(beforeSafety, createAnswerKeySafetySnapshot(adapterWindow, afterState));
   return createAnswerKeyCaptureResult([...angularRecords, ...domRecords], afterState || adapterState, {
     attemptId: options.attemptId,

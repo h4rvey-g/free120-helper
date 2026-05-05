@@ -385,13 +385,45 @@ function extractCurrentContentFromDom(root) {
   });
 }
 
+function isNavigationKeyItem(item) {
+  if (!item) {
+    return false;
+  }
+  const text = safeElementText(item).replace(/\s+/g, ' ').trim();
+  const className = normalizeString(item.className, '').toLowerCase();
+  const id = safeAttribute(item, 'id').toLowerCase();
+  const title = safeAttribute(item, 'title').toLowerCase();
+  const ariaLabel = safeAttribute(item, 'aria-label').toLowerCase();
+  return /^(key|answer\s*key|answers?)\b/i.test(text)
+    || /\b(answer[-_\s]?key|keyitem|key-item)\b/i.test(`${className} ${id} ${title} ${ariaLabel}`);
+}
+
+function getQuestionNavigationItems(nav) {
+  if (!nav || typeof nav.querySelectorAll !== 'function') {
+    return [];
+  }
+  return Array.from(nav.querySelectorAll('li')).filter((item) => !isNavigationKeyItem(item));
+}
+
+function findKeyNavigationItem(adapterDocument) {
+  if (!adapterDocument || typeof adapterDocument.querySelector !== 'function') {
+    return null;
+  }
+  const nav = adapterDocument.querySelector(WEBFRED_ADAPTER_CONFIG.DOM_NAV_SELECTOR);
+  if (!nav || typeof nav.querySelectorAll !== 'function') {
+    return null;
+  }
+  const items = Array.from(nav.querySelectorAll('li'));
+  return items.find((item) => isNavigationKeyItem(item)) || null;
+}
+
 function extractNavigationStateFromDom(adapterDocument, adapterWindow) {
   if (!adapterDocument || typeof adapterDocument.querySelector !== 'function') {
     return Object.freeze({ currentBlock: 0, blockCount: 0, currentItemIndex: 0, itemCount: 0 });
   }
 
   const nav = adapterDocument.querySelector(WEBFRED_ADAPTER_CONFIG.DOM_NAV_SELECTOR);
-  const navItems = nav ? Array.from(nav.querySelectorAll('li')) : [];
+  const navItems = getQuestionNavigationItems(nav);
   const currentIndex = navItems.findIndex((item) => {
     const className = normalizeString(item.className, '').toLowerCase();
     return className.includes('currentitem') || className.includes('current') || safeAttribute(item, 'aria-current') === 'true';
@@ -466,7 +498,7 @@ function extractItemListFromDom(adapterDocument, adapterWindow, examIdentity) {
   }
 
   const navState = extractNavigationStateFromDom(adapterDocument, adapterWindow);
-  return Array.from(nav.querySelectorAll('li')).map((item, index) => {
+  return getQuestionNavigationItems(nav).map((item, index) => {
     const visibleIndex = coercePositiveInteger(safeElementText(item.querySelector('span.index') || item).match(/\d+/)?.[0], index + 1);
     const medleyId = safeDatasetValue(item, 'medleyId') || safeAttribute(item, 'data-medley-id');
     const componentId = safeDatasetValue(item, 'componentId') || safeAttribute(item, 'data-component-id') || safeAttribute(item, 'id');
@@ -1767,6 +1799,8 @@ export {
   extractQuestionIdentityFromDom,
   extractCurrentContentFromDom,
   extractNavigationStateFromDom,
+  findKeyNavigationItem,
+  isNavigationKeyItem,
   safeInvokeFunction,
   isReadableObject,
   safeOwnKeys,

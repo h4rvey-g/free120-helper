@@ -498,14 +498,32 @@ function setMessage(messageElement, message, kind = 'info') {
   messageElement.textContent = text;
 }
 
+function chooseAnswerKeySummary(result, attempt) {
+  const resultSummary = isObject(result && result.summary) ? result.summary : null;
+  const attemptSummary = isObject(attempt && attempt.answerKeyCapture) ? attempt.answerKeyCapture : null;
+  if (!resultSummary) {
+    return attemptSummary || {};
+  }
+  if (!attemptSummary) {
+    return resultSummary;
+  }
+  const resultExpected = coerceNonNegativeInteger(resultSummary.expectedCount, 0);
+  const attemptExpected = coerceNonNegativeInteger(attemptSummary.expectedCount, 0);
+  const resultKnown = coerceNonNegativeInteger(resultSummary.knownCount, 0);
+  const attemptKnown = coerceNonNegativeInteger(attemptSummary.knownCount, 0);
+  if (attemptExpected > resultExpected || attemptKnown > resultKnown) {
+    return attemptSummary;
+  }
+  return resultSummary;
+}
+
 function summarizeAnswerKeyCapture(answerKeyCapture, attempt) {
   const result = answerKeyCapture && hasFunction(answerKeyCapture, 'getLastResult') ? answerKeyCapture.getLastResult() : null;
-  const attemptSummary = isObject(attempt && attempt.answerKeyCapture) ? attempt.answerKeyCapture : {};
-  const summary = isObject(result && result.summary) ? result.summary : attemptSummary;
-  const status = normalizeString(
-    answerKeyCapture && hasFunction(answerKeyCapture, 'getStatus') ? answerKeyCapture.getStatus() : summary.status,
-    'idle'
-  );
+  const resultSummary = isObject(result && result.summary) ? result.summary : null;
+  const summary = chooseAnswerKeySummary(result, attempt);
+  const status = summary === resultSummary
+    ? normalizeString(answerKeyCapture && hasFunction(answerKeyCapture, 'getStatus') ? answerKeyCapture.getStatus() : summary.status, 'idle')
+    : normalizeString(summary.status, 'idle');
   return Object.freeze({
     status,
     source: normalizeString(summary.source, 'unavailable'),
@@ -514,6 +532,8 @@ function summarizeAnswerKeyCapture(answerKeyCapture, attempt) {
     unknownCount: coerceNonNegativeInteger(summary.unknownCount, 0),
     retryCount: coerceNonNegativeInteger(summary.retryCount, 0),
     manual: Boolean(summary.manual),
+    failureReason: normalizeString(summary.failureReason, ''),
+    failureDetail: normalizeString(summary.failureDetail, ''),
     active: Boolean(answerKeyCapture && hasFunction(answerKeyCapture, 'isCaptureActive') && answerKeyCapture.isCaptureActive()),
   });
 }
@@ -531,10 +551,11 @@ function summarizeAdapterState(adapterState) {
 }
 
 function summarizeKeys(summary) {
+  const suffix = summary.failureDetail ? ` · ${summary.failureDetail}` : '';
   if (!summary.expectedCount && !summary.knownCount && !summary.unknownCount) {
-    return summary.status;
+    return `${summary.status}${suffix}`;
   }
-  return `${summary.knownCount}/${summary.expectedCount || summary.knownCount + summary.unknownCount} known · ${summary.unknownCount} unknown`;
+  return `${summary.knownCount}/${summary.expectedCount || summary.knownCount + summary.unknownCount} known · ${summary.unknownCount} unknown${suffix}`;
 }
 
 function renderSettingsDetails(adapterDocument, detailContainer, snapshot) {
@@ -542,6 +563,9 @@ function renderSettingsDetails(adapterDocument, detailContainer, snapshot) {
   appendDetailRow(adapterDocument, detailContainer, 'Tracking', snapshot.trackingStatus);
   appendDetailRow(adapterDocument, detailContainer, 'Key capture', `${snapshot.keySummary.status} · ${snapshot.keySummary.source}`);
   appendDetailRow(adapterDocument, detailContainer, 'Keys', summarizeKeys(snapshot.keySummary));
+  if (snapshot.keySummary.failureReason) {
+    appendDetailRow(adapterDocument, detailContainer, 'Key failure', snapshot.keySummary.failureDetail || snapshot.keySummary.failureReason);
+  }
   appendDetailRow(adapterDocument, detailContainer, 'Adapter', summarizeAdapterState(snapshot.adapterState));
   appendDetailRow(adapterDocument, detailContainer, 'Attempt', snapshot.attempt ? truncateMiddle(snapshot.attempt.id || '', 36) : 'not started');
   appendDetailRow(adapterDocument, detailContainer, 'Progress source', snapshot.progress.source || 'unknown');
