@@ -1,3 +1,5 @@
 .ace-tool/
 /.playwright/cli.config.json
 /.playwright-cli
+/node_modules/
+/dist/

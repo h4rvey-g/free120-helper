@@ -243,16 +243,25 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 - [x] Capture and persist full question HTML snapshots plus existing media/resource URLs.
 - [x] Persist changes promptly on answer selection, navigation, mark changes, and page lifecycle events.
 
-### Phase 6: Active-exam UI
+### Phase 6: Modular build pipeline
 
-- Render a small floating progress pill in WebFRED: `answered/total · Block n`.
-- Add settings access from the pill.
-- Allow user to hide/show pill.
+- [x] Split the implemented monolithic userscript into ES modules under `src/core`, `src/storage`, `src/webfred`, `src/tracking`, `src/answer-keys`, and `src/runtime`.
+- [x] Preserve the Tampermonkey metadata block in `src/userscript.meta.txt` and inject it into the bundled release artifact.
+- [x] Add an esbuild pipeline that bundles `src/main.js` into one release file at `dist/free120-helper.user.js` with IIFE output and no code splitting.
+- [x] Keep module boundaries aligned with implemented PRD responsibilities: constants/settings/logger, IndexedDB attempt store, WebFRED adapter, answer-key capture, tracking engine, and runtime bootstrap.
+- [x] Keep generated build artifacts out of source control while keeping release source modules editable and testable.
+
+### Phase 7: Active-exam UI
+
+- Render a small floating progress pill in WebFRED: `answered/total · Block n` from the existing tracking engine progress state.
+- Add settings access from the pill using the existing localStorage-backed settings store.
+- Allow user to hide/show pill and persist visibility through `settings.setPillVisible`.
 - Show non-intrusive tracking/key-capture details only inside settings, not in the main pill text.
 - Add `Review ready` action after completion; do not auto-open review.
 - Add manual finish flow with explicit warning for ambiguous or partial attempts.
+- Implement active-exam UI in `src/ui/active-exam-pill.js` and wire it through `src/main.js`; do not add UI logic to `src/tracking/engine.js`.
 
-### Phase 7: Completion and scoring
+### Phase 8: Completion and scoring
 
 - Detect native terminal state for single-block and all-block launches.
 - Prevent review unlock after early blocks in all-block mode.
@@ -262,7 +271,7 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 - Calculate correct, incorrect, omitted, unknown, minimum score over total, known-key score, overall score, and per-block breakdown.
 - Store final score summary on completed attempt.
 
-### Phase 8: Review tab
+### Phase 9: Review tab
 
 Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](plan-review-mode-existing-exam-page.md).
 
@@ -279,7 +288,7 @@ Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](pl
 - Render answer-change timeline, rough time per question, marks, notes, highlights, and strikeouts when available.
 - Ensure review tab does not depend on navigating native WebFRED.
 
-### Phase 9: Launch-page history
+### Phase 10: Launch-page history
 
 - Render top-right floating `Free120 History` button on launch page.
 - Build history view with attempt list: date, exam, launched scope, block count, duration, score, review, delete, export/import.
@@ -288,10 +297,12 @@ Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](pl
 - Support history-only export by default and full-backup export only after warning/opt-in.
 - Support import with validation and conflict handling.
 
-### Phase 10: Testing and live validation
+### Phase 11: Testing and live validation
 
 - Add synthetic fixtures for WebFRED-like MCQ content, answer-key metadata, annotations, and incomplete-key states.
 - Unit test storage, migrations, adapter parsing, key capture parsing, extractor, grader, scoring, and review generation.
+- Add module-level tests for exported pure helpers before further splitting large implemented modules.
+- Add a build check that runs esbuild and `node --check dist/free120-helper.user.js` before release.
 - Use Playwright CLI to validate live Step 1 single-block workflow without native Show Correct Answers.
 - Use Playwright CLI to validate live workflow with native Show Correct Answers enabled.
 - Use Playwright CLI to validate all-block review locking behavior.
@@ -299,10 +310,10 @@ Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](pl
 - Use Playwright CLI to validate refresh/resume and export/import.
 - Keep live-test assertions structural and avoid committing NBME question content.
 
-### Phase 11: Hardening and release
+### Phase 12: Hardening and release
 
 - Add fail-safe warnings for unsupported pages, unavailable WebFRED state, incomplete key capture, storage errors, and import validation errors.
 - Add privacy notice and local-data notice.
-- Add install/update notes for Tampermonkey.
-- Run manual QA in Chrome with Tampermonkey.
+- Add install/update notes for Tampermonkey, pointing users at the bundled `dist/free120-helper.user.js` release artifact.
+- Run manual QA in Chrome with Tampermonkey using the bundled output, not source modules.
 - Tag v1 when Step 1/Step 2 CK/Step 3 MCQ smoke tests pass or unsupported MCQ variants fail safely.
