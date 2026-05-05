@@ -1,4 +1,4 @@
-import { SCRIPT, STORAGE_KEYS, DB_SCHEMA, ATTEMPT_STATUS, WEBFRED_ADAPTER_STATUS, WEBFRED_STATE_SOURCE, TRACKING_ENGINE_STATUS, TRACKING_ENGINE_CONFIG } from '../core/constants.js';
+import { SCRIPT, STORAGE_KEYS, DB_SCHEMA, ATTEMPT_STATUS, WEBFRED_ADAPTER_STATUS, WEBFRED_STATE_SOURCE, WEBFRED_ADAPTER_CONFIG, TRACKING_ENGINE_STATUS, TRACKING_ENGINE_CONFIG } from '../core/constants.js';
 import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
 import { isPlainObject, normalizeString, normalizePositiveInteger, createStorageId, sanitizeJsonCompatible, normalizeRecord, normalizeIdArray } from '../storage/attempt-store.js';
@@ -563,6 +563,22 @@ function getCorrectAnswerForQuestion(questionId, attempt, answerKeyCaptureResult
   return fromResult;
 }
 
+function createTrackingWebfredShellSnapshot(candidate = {}) {
+  const adapterDocument = candidate.document || null;
+  const root = candidate.root || null;
+  const nav = adapterDocument && typeof adapterDocument.querySelector === 'function'
+    ? adapterDocument.querySelector(WEBFRED_ADAPTER_CONFIG.DOM_NAV_SELECTOR)
+    : null;
+  const section = root && typeof root.closest === 'function' ? root.closest('section#item') : null;
+  const article = root && typeof root.closest === 'function' ? root.closest('article#content') : null;
+  return Object.freeze({
+    title: normalizeString(adapterDocument && adapterDocument.title, ''),
+    navHtml: normalizeString(nav && nav.outerHTML, ''),
+    itemShellHtml: normalizeString((section || article) && (section || article).outerHTML, ''),
+    capturedAt: nowIso(),
+  });
+}
+
 function createTrackingQuestionSnapshot(candidate) {
   const adapterState = candidate.adapterState || {};
   const item = candidate.item || getTrackingCurrentItem(adapterState, candidate.itemList) || {};
@@ -626,6 +642,7 @@ function createTrackingQuestionSnapshot(candidate) {
     resourceUrls,
     contentHash,
     snapshot: Object.freeze({
+      webfredShell: createTrackingWebfredShellSnapshot(candidate),
       currentItem: sanitizeJsonCompatible(item),
       currentContent: sanitizeJsonCompatible(stateContent || {}),
       notes,
@@ -873,6 +890,7 @@ async function persistTrackingState(options) {
       itemList,
       item: currentItem,
       root,
+      document: adapterDocument,
       timingByQuestionId,
       answerKeyCaptureResult,
     });

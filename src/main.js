@@ -18,6 +18,7 @@ import { createWebfredSiteAdapter } from './webfred/adapter.js';
 import { createAnswerKeyCaptureController } from './answer-keys/controller.js';
 import { createTrackingEngine } from './tracking/engine.js';
 import { createActiveExamPill } from './ui/active-exam-pill.js';
+import { buildReviewHtml, openReviewTab } from './review/blob-builder.js';
 import {
   createRuntimeState,
   bootstrapLaunchPage,
@@ -67,6 +68,9 @@ if (runtimeContext.pageKind === PAGE_KIND.WEBFRED) {
       webfredAdapter,
       answerKeyCapture,
       trackingEngine,
+      reviewLauncher(attemptId, attempt) {
+        return openReviewTab({ window, storage: attemptStore, attemptId, attempt });
+      },
     });
   } catch (error) {
     logger.warn('Active-exam pill failed.', error);
@@ -105,6 +109,12 @@ const api = Object.freeze({
   answerKeyCapture,
   answerKeyCaptureStatuses: ANSWER_KEY_CAPTURE_STATUS,
   answerKeyCaptureSources: ANSWER_KEY_CAPTURE_SOURCE,
+  review: Object.freeze({
+    buildReviewHtml,
+    openAttempt(attemptId) {
+      return openReviewTab({ window, storage: attemptStore, attemptId });
+    },
+  }),
   tracking: trackingEngine,
   trackingEngine,
   trackingEngineStatuses: TRACKING_ENGINE_STATUS,

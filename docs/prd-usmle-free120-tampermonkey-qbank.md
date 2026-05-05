@@ -275,18 +275,18 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 
 Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](plan-review-mode-existing-exam-page.md).
 
-- Generate a self-contained blob HTML review tab from stored attempt data.
-- Build the review tab by replaying the stored WebFRED exam-page shell/snapshots, not by creating a brand-new review UI.
-- Use stored rendered item snapshots as the review source of truth; do not fetch or reconstruct question text from the live WebFRED page during review.
-- Preserve the native-style left navigation (`ol#leftnav`), current item header, question content, option list, and next/previous review navigation semantics inside the blob tab.
-- Insert one review status marker `.f120-review-nav-status` before each left-nav item number in `ol#leftnav > li`, specifically before `span.index`: green check for correct, red cross for incorrect, neutral dash/dot for omitted or unknown; keep the existing item number visible and attach helper review navigation handlers to the existing row target.
-- Insert one option marker slot `.f120-review-option-status` in each answer row at `ol.options > li.stContext`, specifically after `input.NBOptionInput` and before the visible option text `span`: green check before the correct answer and red cross before the user-selected wrong answer; leave the slot blank for unrelated distractors.
-- Render answer highlighting in the existing option box: correct answer green, incorrect selected answer red, omitted neutral, unknown key warning.
-- Insert a time-spent display `.f120-review-time-spent` below each question, immediately after `ol.options` in its answer form when possible, with fallback placement after the answer box inside the current `div[id^="item"]` item root.
-- Render filters for all, correct, incorrect, omitted, marked, and block as helper controls around the reused exam shell.
-- Render overall score and per-block score breakdown.
-- Render answer-change timeline, rough time per question, marks, notes, highlights, and strikeouts when available.
-- Ensure review tab does not depend on navigating native WebFRED.
+- [x] Generate a self-contained blob HTML review tab from stored attempt data.
+- [x] Build the review tab by replaying the stored WebFRED exam-page shell/snapshots, not by creating a brand-new review UI.
+- [x] Use stored rendered item snapshots as the review source of truth; do not fetch or reconstruct question text from the live WebFRED page during review.
+- [x] Preserve the native-style left navigation (`ol#leftnav`), current item header, question content, option list, and next/previous review navigation semantics inside the blob tab.
+- [x] Insert one review status marker `.f120-review-nav-status` before each left-nav item number in `ol#leftnav > li`, specifically before `span.index`: green check for correct, red cross for incorrect, neutral dash/dot for omitted or unknown; keep the existing item number visible and attach helper review navigation handlers to the existing row target.
+- [x] Insert one option marker slot `.f120-review-option-status` in each answer row at `ol.options > li.stContext`, specifically after `input.NBOptionInput` and before the visible option text `span`: green check before the correct answer and red cross before the user-selected wrong answer; leave the slot blank for unrelated distractors.
+- [x] Render answer highlighting in the existing option box: correct answer green, incorrect selected answer red, omitted neutral, unknown key warning.
+- [x] Insert a time-spent display `.f120-review-time-spent` below each question, immediately after `ol.options` in its answer form when possible, with fallback placement after the answer box inside the current `div[id^="item"]` item root.
+- [x] Render filters for all, correct, incorrect, omitted, marked, and block as helper controls around the reused exam shell.
+- [x] Render overall score and per-block score breakdown.
+- [x] Render answer-change timeline, rough time per question, marks, notes, highlights, and strikeouts when available.
+- [x] Ensure review tab does not depend on navigating native WebFRED.
 
 ### Phase 10: Launch-page history
 

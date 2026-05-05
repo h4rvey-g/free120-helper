@@ -5,7 +5,8 @@
     "build": "node scripts/build-userscript.mjs",
     "build:dev": "node scripts/build-userscript.mjs --dev",
     "watch": "node scripts/build-userscript.mjs --watch",
-    "check": "npm run build && node --check dist/free120-helper.user.js"
+    "test": "node scripts/test-review.mjs",
+    "check": "npm run build && node --check dist/free120-helper.user.js && npm test"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
