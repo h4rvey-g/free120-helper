@@ -1,5 +1,6 @@
 import { SCRIPT, ATTEMPT_STATUS } from '../core/constants.js';
 import { nowIso } from '../core/logger.js';
+import { buildAttemptCompletionPatch, shouldManualFinishCompleteAttempt } from '../scoring/grader.js';
 
 const ACTIVE_EXAM_PILL_STYLE_ID = 'f120-active-exam-pill-style';
 const REVIEW_READY_EVENT = 'free120-helper:review-ready';
@@ -210,14 +211,22 @@ function isAttemptReviewReady(attempt) {
 
 function buildManualFinishAttemptPatch(attempt, progress, options = {}) {
   const finishedAt = options.finishedAt || nowIso();
-  const completeEnough = progress && progress.total > 0 && progress.answered >= progress.total;
-  const existingSource = isObject(attempt && attempt.source) ? attempt.source : {};
-  return Object.freeze({
-    status: completeEnough ? ATTEMPT_STATUS.COMPLETED : ATTEMPT_STATUS.PARTIAL,
-    reviewReady: true,
+  const adapterState = options.adapterState || null;
+  const completeEnough = shouldManualFinishCompleteAttempt(attempt, adapterState);
+  const completionPatch = buildAttemptCompletionPatch(attempt, {
+    adapterState,
     completedAt: finishedAt,
+    manual: true,
+    partial: !completeEnough,
+    reason: normalizeString(options.reason, 'active-exam-ui-manual-finish'),
+  });
+  const existingSource = isObject(attempt && attempt.source) ? attempt.source : {};
+  const completionSource = isObject(completionPatch.source) ? completionPatch.source : {};
+  return Object.freeze({
+    ...completionPatch,
     source: Object.freeze({
       ...existingSource,
+      ...completionSource,
       manualFinish: Object.freeze({
         finishedAt,
         warningAccepted: true,
@@ -225,6 +234,7 @@ function buildManualFinishAttemptPatch(attempt, progress, options = {}) {
         answered: coerceNonNegativeInteger(progress && progress.answered, 0),
         total: coerceNonNegativeInteger(progress && progress.total, 0),
         blockNumber: coerceNonNegativeInteger(progress && progress.blockNumber, 1),
+        status: completeEnough ? ATTEMPT_STATUS.COMPLETED : ATTEMPT_STATUS.PARTIAL,
         warning: MANUAL_FINISH_WARNING,
       }),
     }),
@@ -833,7 +843,7 @@ function createActiveExamPill(options = {}) {
       const latestAttempt = flushedAttempt || snapshot.attempt || attempt;
       const latestAdapterState = getAdapterState();
       const latestProgress = deriveActiveExamProgress({ attempt: latestAttempt, adapterState: latestAdapterState });
-      const patch = buildManualFinishAttemptPatch(latestAttempt, latestProgress);
+      const patch = buildManualFinishAttemptPatch(latestAttempt, latestProgress, { adapterState: latestAdapterState });
       manualFinishedAttempt = storage && hasFunction(storage, 'updateAttempt')
         ? await storage.updateAttempt(latestAttempt.id, patch)
         : Object.freeze({ ...latestAttempt, ...patch });

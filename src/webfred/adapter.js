@@ -10,6 +10,16 @@ function createWebfredAdapterError(message, details) {
   return error;
 }
 
+function stableHashString(value) {
+  const text = normalizeString(value, '');
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 function safeNowMs(adapterWindow) {
   const performanceObject = adapterWindow && adapterWindow.performance;
   if (performanceObject && typeof performanceObject.now === 'function') {
@@ -193,6 +203,17 @@ function createEmptyWebfredState(reason = 'not-initialized') {
     marks: Object.freeze({}),
     currentContent: null,
     blockMetadata: Object.freeze([]),
+    terminalState: Object.freeze({
+      isTerminal: false,
+      blockComplete: false,
+      examComplete: false,
+      allBlocksComplete: false,
+      currentBlock: 0,
+      completedBlockNumbers: Object.freeze([]),
+      source: WEBFRED_STATE_SOURCE.UNAVAILABLE,
+      detectedAt: currentTime,
+      reason: '',
+    }),
     raw: Object.freeze({}),
   });
 }
@@ -388,6 +409,52 @@ function extractNavigationStateFromDom(adapterDocument, adapterWindow) {
   });
 }
 
+function inferCompletedBlockNumbersFromTerminal(navState, summary = {}) {
+  const currentBlock = coercePositiveInteger(summary.currentBlock || navState.currentBlock, 0);
+  const blockCount = coercePositiveInteger(summary.blockCount || navState.blockCount, 0);
+  if (summary.examComplete || summary.allBlocksComplete) {
+    if (blockCount > 0) {
+      return Array.from({ length: blockCount }, (_item, index) => index + 1);
+    }
+    return currentBlock ? [currentBlock] : [];
+  }
+  if (summary.blockComplete && currentBlock > 0) {
+    return [currentBlock];
+  }
+  return [];
+}
+
+function extractTerminalStateFromDom(adapterDocument, adapterWindow, navState = null) {
+  const currentNavState = navState || extractNavigationStateFromDom(adapterDocument, adapterWindow);
+  const bodyText = safeElementText(adapterDocument && (adapterDocument.body || adapterDocument.documentElement));
+  const normalizedText = bodyText.replace(/\s+/g, ' ').trim();
+  const blockComplete = /\b(?:you\s+have\s+)?(?:completed|finished|ended)\s+(?:this\s+)?block\b/i.test(normalizedText)
+    || /\bblock\s+(?:is\s+)?(?:complete|completed|finished|ended)\b/i.test(normalizedText)
+    || /\bend\s+of\s+block\b/i.test(normalizedText);
+  const examComplete = /\b(?:you\s+have\s+)?(?:completed|finished|ended)\s+(?:the\s+)?(?:exam|test)\b/i.test(normalizedText)
+    || /\b(?:exam|test)\s+(?:is\s+)?(?:complete|completed|finished|ended)\b/i.test(normalizedText);
+  const allBlocksComplete = examComplete || /\ball\s+blocks?\s+(?:are\s+)?(?:complete|completed|finished|ended)\b/i.test(normalizedText);
+  const isTerminal = Boolean(blockComplete || examComplete || allBlocksComplete);
+  const completedBlockNumbers = inferCompletedBlockNumbersFromTerminal(currentNavState, {
+    blockComplete,
+    examComplete,
+    allBlocksComplete,
+  });
+
+  return Object.freeze({
+    isTerminal,
+    blockComplete,
+    examComplete,
+    allBlocksComplete,
+    currentBlock: currentNavState.currentBlock || 0,
+    completedBlockNumbers: Object.freeze(completedBlockNumbers),
+    source: WEBFRED_STATE_SOURCE.DOM_FALLBACK,
+    detectedAt: nowIso(),
+    reason: isTerminal ? 'dom-terminal-text' : '',
+    textHash: isTerminal ? stableHashString(normalizedText.slice(0, 1000)) : '',
+  });
+}
+
 function extractItemListFromDom(adapterDocument, adapterWindow, examIdentity) {
   if (!adapterDocument || typeof adapterDocument.querySelector !== 'function') {
     return [];
@@ -434,6 +501,7 @@ function extractDomFallbackState(adapterWindow, adapterDocument) {
   const examIdentity = extractExamIdentityFromDom(adapterDocument, adapterWindow);
   const launchedScope = extractLaunchedScopeFromDom(adapterWindow);
   const navState = extractNavigationStateFromDom(adapterDocument, adapterWindow);
+  const terminalState = extractTerminalStateFromDom(adapterDocument, adapterWindow, navState);
   const itemList = extractItemListFromDom(adapterDocument, adapterWindow, examIdentity);
   const identity = root ? extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow) : buildQuestionIdentity({
     examProgram: examIdentity.program,
@@ -472,6 +540,7 @@ function extractDomFallbackState(adapterWindow, adapterDocument) {
     marks,
     currentContent,
     blockMetadata: navState.currentBlock ? [{ blockNumber: navState.currentBlock, itemCount: navState.itemCount || itemList.length }] : [],
+    terminalState,
     capabilities: Object.freeze({
       hasDomFallback: Boolean(root || itemList.length),
       hasTrustedIdentity: Boolean(currentItem && identity.identitySource === 'component-medley'),
@@ -1227,6 +1296,88 @@ function normalizeBlockMetadataFromAngular(rawBlocks, currentBlock, blockCount, 
   return [];
 }
 
+function booleanFromSemanticValue(value) {
+  const direct = normalizeMaybeBoolean(value);
+  if (direct !== null) {
+    return direct;
+  }
+  const text = normalizeString(value, '').toLowerCase();
+  if (!text) {
+    return false;
+  }
+  return /complete|completed|finished|ended|terminal|submitted/.test(text)
+    && !/incomplete|not\s+complete|unfinished|not\s+finished/.test(text);
+}
+
+function normalizeCompletedBlockNumbers(value) {
+  const values = (() => {
+    if (value === null || value === undefined || value === '') {
+      return [];
+    }
+    if (typeof value === 'string') {
+      const matches = value.match(/\d+/g);
+      return matches && matches.length ? matches : [value];
+    }
+    if (typeof value === 'number') {
+      return [value];
+    }
+    return valueToArray(value);
+  })();
+  return uniqueNormalizedStrings(values.flatMap((entry) => {
+    if (isReadableObject(entry)) {
+      return [
+        readCandidateProperty(entry, ['blockNumber', 'block', 'index', 'number']),
+        readCandidateProperty(entry, ['id']),
+      ];
+    }
+    return [entry];
+  }))
+    .map((entry) => coercePositiveInteger(entry, 0))
+    .filter(Boolean)
+    .sort((left, right) => left - right);
+}
+
+function extractTerminalStateFromAngular(roots, currentBlock, blockCount, fallbackTerminalState = null) {
+  const statusText = [
+    findFirstSemanticValue(roots, ['status', 'state', 'examStatus', 'testStatus', 'blockStatus', 'mode'], { maxDepth: 3 }),
+    findFirstSemanticValue(roots, ['message', 'completionMessage', 'terminalMessage', 'endMessage'], { maxDepth: 3 }),
+  ].map((value) => normalizeString(value, '')).join(' ');
+  const blockComplete = booleanFromSemanticValue(findFirstSemanticValue(roots, [
+    'blockComplete', 'isBlockComplete', 'blockCompleted', 'currentBlockComplete', 'blockFinished', 'blockEnded', 'endOfBlock',
+  ], { maxDepth: 3 })) || /\bblock\b[^.]{0,60}\b(?:complete|completed|finished|ended)\b/i.test(statusText);
+  const examComplete = booleanFromSemanticValue(findFirstSemanticValue(roots, [
+    'examComplete', 'isExamComplete', 'testComplete', 'isTestComplete', 'examFinished', 'testFinished', 'examEnded', 'testEnded', 'submitted', 'isSubmitted',
+  ], { maxDepth: 3 })) || /\b(?:exam|test)\b[^.]{0,60}\b(?:complete|completed|finished|ended|submitted)\b/i.test(statusText);
+  const allBlocksComplete = examComplete || booleanFromSemanticValue(findFirstSemanticValue(roots, [
+    'allBlocksComplete', 'allBlocksCompleted', 'blocksComplete', 'sectionsComplete', 'allSectionsComplete',
+  ], { maxDepth: 3 })) || /\ball\s+blocks?\b[^.]{0,60}\b(?:complete|completed|finished|ended)\b/i.test(statusText);
+  const explicitCompletedBlocks = normalizeCompletedBlockNumbers(findFirstSemanticValue(roots, [
+    'completedBlockNumbers', 'completeBlockNumbers', 'completedBlocks', 'completeBlocks', 'finishedBlocks', 'endedBlocks',
+  ], { maxDepth: 3 }));
+  const inferredCompletedBlocks = inferCompletedBlockNumbersFromTerminal({ currentBlock, blockCount }, {
+    blockComplete,
+    examComplete,
+    allBlocksComplete,
+    currentBlock,
+    blockCount,
+  });
+  const completedBlockNumbers = explicitCompletedBlocks.length ? explicitCompletedBlocks : inferredCompletedBlocks;
+  const fallback = fallbackTerminalState || {};
+  const isTerminal = Boolean(blockComplete || examComplete || allBlocksComplete || fallback.isTerminal);
+
+  return Object.freeze({
+    isTerminal,
+    blockComplete,
+    examComplete,
+    allBlocksComplete,
+    currentBlock: currentBlock || (fallback && fallback.currentBlock) || 0,
+    completedBlockNumbers: Object.freeze(completedBlockNumbers.length ? completedBlockNumbers : (fallback.completedBlockNumbers || [])),
+    source: WEBFRED_STATE_SOURCE.ANGULAR,
+    detectedAt: nowIso(),
+    reason: isTerminal ? 'angular-terminal-state' : '',
+  });
+}
+
 function extractAngularState(adapterWindow, adapterDocument, angularServices, domState) {
   const roots = collectAngularStateRoots(angularServices);
   const fallbackExamIdentity = domState && domState.examIdentity ? domState.examIdentity : extractExamIdentityFromDom(adapterDocument, adapterWindow);
@@ -1282,6 +1433,7 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
   const currentContent = angularContent || (domState && domState.currentContent) || null;
   const rawBlocks = findFirstSemanticValue(roots, ['blocks', 'blockList', 'sections', 'blockMetadata'], { maxDepth: 3 });
   const blockMetadata = normalizeBlockMetadataFromAngular(rawBlocks, currentBlock, blockCount, itemCount || itemList.length);
+  const terminalState = extractTerminalStateFromAngular(roots, currentBlock, blockCount, domState && domState.terminalState);
 
   return Object.freeze({
     source: WEBFRED_STATE_SOURCE.ANGULAR,
@@ -1296,6 +1448,7 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
     marks,
     currentContent,
     blockMetadata,
+    terminalState,
     capabilities: Object.freeze({
       hasAngularServices: Boolean(angularServices && angularServices.resolvedNames && angularServices.resolvedNames.length),
       hasTrustedIdentity: Boolean(currentItem && currentItem.identitySource === 'component-medley'),
@@ -1346,6 +1499,20 @@ function mergeWebfredState(angularState, domState, options = {}) {
     ...(primary.marks || {}),
   });
   const currentContent = primary.currentContent || (fallback && fallback.currentContent) || null;
+  const primaryTerminal = primary.terminalState || {};
+  const fallbackTerminal = fallback && fallback.terminalState ? fallback.terminalState : {};
+  const terminalState = Object.freeze({
+    ...fallbackTerminal,
+    ...primaryTerminal,
+    isTerminal: Boolean(primaryTerminal.isTerminal || fallbackTerminal.isTerminal),
+    blockComplete: Boolean(primaryTerminal.blockComplete || fallbackTerminal.blockComplete),
+    examComplete: Boolean(primaryTerminal.examComplete || fallbackTerminal.examComplete),
+    allBlocksComplete: Boolean(primaryTerminal.allBlocksComplete || fallbackTerminal.allBlocksComplete),
+    completedBlockNumbers: Object.freeze(uniqueNormalizedStrings([
+      ...((fallbackTerminal && fallbackTerminal.completedBlockNumbers) || []),
+      ...((primaryTerminal && primaryTerminal.completedBlockNumbers) || []),
+    ]).map((entry) => coercePositiveInteger(entry, 0)).filter(Boolean).sort((left, right) => left - right)),
+  });
   const capabilities = mergeWebfredCapabilities(primary.capabilities, fallback && fallback.capabilities);
   const degradedReasons = uniqueNormalizedStrings([
     ...((fallback && fallback.degradedReasons) || []),
@@ -1395,6 +1562,7 @@ function mergeWebfredState(angularState, domState, options = {}) {
     blockMetadata: Object.freeze((primary.blockMetadata && primary.blockMetadata.length)
       ? primary.blockMetadata
       : ((fallback && fallback.blockMetadata) || [])),
+    terminalState,
     raw: Object.freeze({
       angular: angularState && angularState.raw ? angularState.raw : {},
       dom: domState && domState.raw ? domState.raw : {},

@@ -3,6 +3,7 @@ import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
 import { isPlainObject, normalizeString, normalizePositiveInteger, createStorageId, sanitizeJsonCompatible, normalizeRecord, normalizeIdArray } from '../storage/attempt-store.js';
 import { safeNowMs, firstNonEmpty, buildQuestionIdentity, safeAttribute, isReadableObject, coercePositiveInteger, uniqueNormalizedStrings, extractCurrentContentFromDom, extractResourceUrls, extractChoicesFromDom, safeElementText } from '../webfred/adapter.js';
+import { buildAttemptCompletionPatch, inferNativeCompletionState } from '../scoring/grader.js';
 
 function createTrackingEngineError(message, details) {
   const error = new Error(message);
@@ -185,6 +186,31 @@ function buildTrackingBlockMetadata(adapterState, itemList, responses = {}) {
   }
 
   return Array.from(blocksByNumber.values()).sort((left, right) => left.blockNumber - right.blockNumber);
+}
+
+function buildTrackingItemMetadataByQuestionId(existingAttempt, itemList, currentItem = null) {
+  const existingSource = isPlainObject(existingAttempt && existingAttempt.source) ? existingAttempt.source : {};
+  const metadata = normalizeRecord(existingSource.itemMetadataByQuestionId || {});
+  const items = Array.isArray(itemList) ? itemList.slice() : [];
+  if (currentItem) {
+    items.push(currentItem);
+  }
+  items.forEach((item) => {
+    const questionId = normalizeString(item && item.questionId, '');
+    if (!questionId) {
+      return;
+    }
+    metadata[questionId] = Object.freeze({
+      questionId,
+      blockNumber: coercePositiveInteger(item.blockNumber, 1),
+      itemIndex: coercePositiveInteger(item.itemIndex, 1),
+      componentId: normalizeString(item.componentId, ''),
+      medleyId: normalizeString(item.medleyId, ''),
+      identitySource: normalizeString(item.identitySource, ''),
+      source: normalizeString(item.source, ''),
+    });
+  });
+  return Object.freeze(metadata);
 }
 
 function buildAnsweredProgressByBlock(questionIds, itemList, responses = {}) {
@@ -608,6 +634,65 @@ function createTrackingQuestionSnapshot(candidate) {
   });
 }
 
+function buildLockedNativeTerminalPatch(attempt, adapterState, completionState, reason) {
+  const existingSource = isPlainObject(attempt && attempt.source) ? attempt.source : {};
+  return Object.freeze({
+    reviewReady: false,
+    source: Object.freeze({
+      ...existingSource,
+      completion: Object.freeze({
+        ...(isPlainObject(existingSource.completion) ? existingSource.completion : {}),
+        status: ATTEMPT_STATUS.IN_PROGRESS,
+        reviewReady: false,
+        reviewLocked: true,
+        terminalDetected: true,
+        reason: normalizeString(reason, completionState && completionState.reason ? completionState.reason : 'native-terminal-incomplete-all-block'),
+        updatedAt: nowIso(),
+        completedBlockNumbers: completionState && completionState.completedBlockNumbers ? completionState.completedBlockNumbers : [],
+        allLaunchedBlocksComplete: Boolean(completionState && completionState.allLaunchedBlocksComplete),
+        scope: completionState && completionState.scope ? completionState.scope : {},
+        terminalState: completionState && completionState.terminalState ? completionState.terminalState : {},
+      }),
+    }),
+  });
+}
+
+function applyNativeCompletionToTrackingPatch(attempt, patch, adapterState, reason) {
+  const candidate = Object.freeze({ ...attempt, ...patch });
+  const completionState = inferNativeCompletionState(candidate, adapterState);
+  if (!completionState.terminalDetected) {
+    return patch;
+  }
+  if (!completionState.shouldComplete) {
+    const lockedPatch = buildLockedNativeTerminalPatch(candidate, adapterState, completionState, completionState.reason);
+    const lockedSource = isPlainObject(lockedPatch.source) ? lockedPatch.source : {};
+    return Object.freeze({
+      ...patch,
+      ...lockedPatch,
+      source: Object.freeze({
+        ...lockedSource,
+        ...(isPlainObject(patch.source) ? patch.source : {}),
+        completion: lockedSource.completion || {},
+      }),
+    });
+  }
+  const completionPatch = buildAttemptCompletionPatch(candidate, {
+    adapterState,
+    completionState,
+    reason: normalizeString(reason, completionState.reason || 'native-terminal-complete'),
+  });
+  const completionSource = isPlainObject(completionPatch.source) ? completionPatch.source : {};
+  return Object.freeze({
+    ...patch,
+    ...completionPatch,
+    source: Object.freeze({
+      ...completionSource,
+      ...(isPlainObject(patch.source) ? patch.source : {}),
+      completion: completionSource.completion || {},
+    }),
+  });
+}
+
 function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, currentItem, mergeResult, timingByQuestionId, markedQuestionIds, answerKeyCaptureResult, reason) {
   const existingResponses = mergeResult.responses;
   const existingQuestionIds = existingAttempt && existingAttempt.questionIds ? existingAttempt.questionIds : [];
@@ -618,6 +703,7 @@ function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, curr
     ...((existingAttempt && existingAttempt.correctAnswers) || {}),
     ...currentAnswerKeys,
   };
+  const existingSource = isPlainObject(existingAttempt && existingAttempt.source) ? existingAttempt.source : {};
   return Object.freeze({
     schemaVersion: DB_SCHEMA.VERSION,
     scriptVersion: SCRIPT.VERSION,
@@ -626,7 +712,7 @@ function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, curr
     launchedScope: normalizeRecord(adapterState.launchedScope || (existingAttempt && existingAttempt.launchedScope) || {}),
     blockMetadata: buildTrackingBlockMetadata(adapterState, itemList, existingResponses),
     questionIds,
-    questionCount: Math.max(questionIds.length, coercePositiveInteger(adapterState.itemCount, 0)),
+    questionCount: Math.max(questionIds.length, coercePositiveInteger(adapterState.itemCount, 0), coercePositiveInteger(existingAttempt && existingAttempt.questionCount, 0)),
     responses: existingResponses,
     answerTimeline: appendTrackingAnswerTimeline(existingAttempt && existingAttempt.answerTimeline, mergeResult.changes, existingAttempt.id, reason, adapterState),
     correctAnswers,
@@ -636,10 +722,12 @@ function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, curr
     annotationsByQuestionId: normalizeRecord((existingAttempt && existingAttempt.annotationsByQuestionId) || {}),
     timingByQuestionId,
     source: Object.freeze({
+      ...existingSource,
       adapterStatus: adapterState.status,
       adapterSource: adapterState.source,
       trackingEngineStatus: adapterState.status === WEBFRED_ADAPTER_STATUS.READY ? TRACKING_ENGINE_STATUS.TRACKING : TRACKING_ENGINE_STATUS.DEGRADED,
       progress,
+      itemMetadataByQuestionId: buildTrackingItemMetadataByQuestionId(existingAttempt, itemList, currentItem),
       lastTrackingReason: normalizeString(reason, 'state-update'),
       lastTrackedAt: nowIso(),
     }),
@@ -726,10 +814,24 @@ async function persistTrackingState(options) {
   if (!attempt || !adapterState) {
     return attempt || null;
   }
+  if (attempt.status && attempt.status !== ATTEMPT_STATUS.IN_PROGRESS) {
+    return attempt;
+  }
 
   const itemList = getTrackingItemList(adapterState);
   const currentItem = getTrackingCurrentItem(adapterState, itemList);
+  const nativeCompletionState = inferNativeCompletionState(attempt, adapterState);
   if (!currentItem || !currentItem.questionId) {
+    if (nativeCompletionState.terminalDetected) {
+      const patch = nativeCompletionState.shouldComplete
+        ? buildAttemptCompletionPatch(attempt, {
+            adapterState,
+            completionState: nativeCompletionState,
+            reason: nativeCompletionState.reason,
+          })
+        : buildLockedNativeTerminalPatch(attempt, adapterState, nativeCompletionState, nativeCompletionState.reason);
+      return storage.updateAttempt(attempt.id, patch);
+    }
     return attempt;
   }
 
@@ -750,7 +852,7 @@ async function persistTrackingState(options) {
   const answerKeyCaptureResult = options.answerKeyCapture && typeof options.answerKeyCapture.getLastResult === 'function'
     ? options.answerKeyCapture.getLastResult()
     : null;
-  const patch = buildTrackingAttemptPatch(
+  let patch = buildTrackingAttemptPatch(
     attempt,
     adapterState,
     itemList,
@@ -785,21 +887,31 @@ async function persistTrackingState(options) {
     }
   }
 
+  patch = applyNativeCompletionToTrackingPatch(
+    { ...attempt, ...patch },
+    patch,
+    adapterState,
+    options.reason || 'state-update'
+  );
+
   attempt = await storage.updateAttempt(attempt.id, patch);
-  await storage.saveInProgressState({
-    attemptId: attempt.id,
-    pageContext: buildTrackingPageContext(adapterState, options.runtimeContext),
-    activeBlock: currentItem.blockNumber || adapterState.currentBlock || 1,
-    activeQuestionId: currentItem.questionId,
-    answeredQuestionIds: Object.keys(attempt.responses || {}).filter((qid) => normalizeString(attempt.responses[qid], '')),
-    visitedQuestionIds: attempt.questionIds,
-    state: {
-      status: attempt.source && attempt.source.trackingEngineStatus ? attempt.source.trackingEngineStatus : TRACKING_ENGINE_STATUS.TRACKING,
-      progress: attempt.source && attempt.source.progress ? attempt.source.progress : {},
-      lastReason: options.reason || 'state-update',
-      updatedAt: nowIso(),
-    },
-  });
+  if (attempt.status === ATTEMPT_STATUS.IN_PROGRESS) {
+    await storage.saveInProgressState({
+      attemptId: attempt.id,
+      pageContext: buildTrackingPageContext(adapterState, options.runtimeContext),
+      activeBlock: currentItem.blockNumber || adapterState.currentBlock || 1,
+      activeQuestionId: currentItem.questionId,
+      answeredQuestionIds: Object.keys(attempt.responses || {}).filter((qid) => normalizeString(attempt.responses[qid], '')),
+      visitedQuestionIds: attempt.questionIds,
+      state: {
+        status: attempt.source && attempt.source.trackingEngineStatus ? attempt.source.trackingEngineStatus : TRACKING_ENGINE_STATUS.TRACKING,
+        progress: attempt.source && attempt.source.progress ? attempt.source.progress : {},
+        completion: attempt.source && attempt.source.completion ? attempt.source.completion : {},
+        lastReason: options.reason || 'state-update',
+        updatedAt: nowIso(),
+      },
+    });
+  }
   return attempt;
 }
 
@@ -872,7 +984,13 @@ function createTrackingEngine(options = {}) {
         reason,
         pauseTiming: Boolean(flushOptions.pauseTiming),
       });
-      if (adapterState.status === WEBFRED_ADAPTER_STATUS.READY) {
+      if (attempt && attempt.status !== ATTEMPT_STATUS.IN_PROGRESS) {
+        stopped = true;
+        stopPolling();
+        stopAdapterSubscription();
+        removeDomListeners();
+        setStatus(TRACKING_ENGINE_STATUS.STOPPED);
+      } else if (adapterState.status === WEBFRED_ADAPTER_STATUS.READY) {
         setStatus(TRACKING_ENGINE_STATUS.TRACKING);
       } else if (adapterState.status === WEBFRED_ADAPTER_STATUS.DEGRADED || adapterState.status === WEBFRED_ADAPTER_STATUS.UNAVAILABLE) {
         setStatus(TRACKING_ENGINE_STATUS.DEGRADED);

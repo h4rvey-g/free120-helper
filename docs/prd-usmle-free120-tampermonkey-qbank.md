@@ -263,13 +263,13 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 
 ### Phase 8: Completion and scoring
 
-- Detect native terminal state for single-block and all-block launches.
-- Prevent review unlock after early blocks in all-block mode.
-- Complete single-block attempts after block completion or explicit finish.
-- Complete all-block attempts only after all launched blocks complete, except explicit partial finish.
-- Grade final selected answers against captured keys.
-- Calculate correct, incorrect, omitted, unknown, minimum score over total, known-key score, overall score, and per-block breakdown.
-- Store final score summary on completed attempt.
+- [x] Detect native terminal state for single-block and all-block launches.
+- [x] Prevent review unlock after early blocks in all-block mode.
+- [x] Complete single-block attempts after block completion or explicit finish.
+- [x] Complete all-block attempts only after all launched blocks complete, except explicit partial finish.
+- [x] Grade final selected answers against captured keys.
+- [x] Calculate correct, incorrect, omitted, unknown, minimum score over total, known-key score, overall score, and per-block breakdown.
+- [x] Store final score summary on completed attempt.
 
 ### Phase 9: Review tab
 

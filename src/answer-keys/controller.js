@@ -1,8 +1,9 @@
-import { STORAGE_KEYS, ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAPTURE_SOURCE, ANSWER_KEY_CAPTURE_CONFIG } from '../core/constants.js';
+import { STORAGE_KEYS, ATTEMPT_STATUS, ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAPTURE_SOURCE, ANSWER_KEY_CAPTURE_CONFIG } from '../core/constants.js';
 import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
 import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
-import { firstNonEmpty, buildQuestionIdentity, safeAttribute, safeDatasetValue, isDomElement, isReadableObject, valueToArray, coercePositiveInteger, normalizeMaybeBoolean, readCandidateProperty, safeOwnKeys, uniqueNormalizedStrings, extractChoicesFromDom, safeNowMs } from '../webfred/adapter.js';
+import { firstNonEmpty, buildQuestionIdentity, safeAttribute, safeDatasetValue, isDomElement, isReadableObject, valueToArray, coercePositiveInteger, normalizeMaybeBoolean, readCandidateProperty, safeOwnKeys, uniqueNormalizedStrings, extractChoicesFromDom, safeNowMs, createEmptyWebfredState } from '../webfred/adapter.js';
+import { buildAttemptScoreSummary } from '../scoring/grader.js';
 
 function createAnswerKeyCaptureError(message, details) {
   const error = new Error(message);
@@ -944,7 +945,7 @@ async function persistAnswerKeyCaptureResult(storage, result, logger) {
       ...(existing.correctAnswers || {}),
       ...(result.correctAnswers || {}),
     };
-    return await storage.updateAttempt(attemptId, {
+    const patch = {
       correctAnswers: updatedCorrectAnswers,
       answerKeyCapture: {
         ...(existing.answerKeyCapture || {}),
@@ -952,7 +953,16 @@ async function persistAnswerKeyCaptureResult(storage, result, logger) {
         lastError: result.lastError || '',
         updatedAt: nowIso(),
       },
-    });
+    };
+    if (existing.status && existing.status !== ATTEMPT_STATUS.IN_PROGRESS) {
+      patch.scoreSummary = buildAttemptScoreSummary({
+        ...existing,
+        correctAnswers: updatedCorrectAnswers,
+      }, {
+        reason: 'answer-key-capture-rescore',
+      });
+    }
+    return await storage.updateAttempt(attemptId, patch);
   } catch (error) {
     if (logger) {
       logger.warn('Answer-key capture result could not be persisted.', error);
