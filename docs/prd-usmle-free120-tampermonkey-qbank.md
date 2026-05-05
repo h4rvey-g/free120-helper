@@ -290,12 +290,12 @@ Detailed selector-level plan: [`docs/plan-review-mode-existing-exam-page.md`](pl
 
 ### Phase 10: Launch-page history
 
-- Render top-right floating `Free120 History` button on launch page.
-- Build history view with attempt list: date, exam, launched scope, block count, duration, score, review, delete, export/import.
-- Open selected attempt review in a blob tab.
-- Support delete with confirmation.
-- Support history-only export by default and full-backup export only after warning/opt-in.
-- Support import with validation and conflict handling.
+- [x] Render top-right floating `Free120 History` button on launch page.
+- [x] Build history view with attempt list: date, exam, launched scope, block count, duration, score, review, delete, export/import.
+- [x] Open selected attempt review in a blob tab.
+- [x] Support delete with confirmation.
+- [x] Support history-only export by default and full-backup export only after warning/opt-in.
+- [x] Support import with validation and conflict handling.
 
 ### Phase 11: Testing and live validation
 

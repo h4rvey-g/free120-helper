@@ -501,10 +501,7 @@ async function openReviewTab(options = {}) {
   if (!attemptId) {
     throw new Error('Review launcher requires attempt id.');
   }
-  const attempt = await storage.getAttempt(attemptId) || options.attempt;
-  if (!attempt) {
-    throw new Error(`Attempt not found: ${attemptId}`);
-  }
+
   const opened = typeof adapterWindow.open === 'function' ? adapterWindow.open('about:blank', '_blank') : null;
   if (!opened) {
     throw new Error('Review tab popup was blocked. Allow popups for orientation.nbme.org and retry.');
@@ -512,16 +509,31 @@ async function openReviewTab(options = {}) {
   try {
     opened.opener = null;
   } catch (_error) {}
-  const snapshots = await storage.listQuestionSnapshots(attemptId);
-  const url = createReviewBlobUrl(attempt, snapshots, adapterWindow);
+
   try {
-    opened.location.href = url;
-  } catch (_error) {
-    if (typeof adapterWindow.open === 'function') {
-      adapterWindow.open(url, '_blank', 'noopener,noreferrer');
+    const attempt = options.attempt || await storage.getAttempt(attemptId);
+    if (!attempt) {
+      throw new Error(`Attempt not found: ${attemptId}`);
     }
+    const snapshots = await storage.listQuestionSnapshots(attemptId);
+    const url = createReviewBlobUrl(attempt, snapshots, adapterWindow);
+    try {
+      opened.location.href = url;
+    } catch (_error) {
+      if (typeof adapterWindow.open === 'function') {
+        adapterWindow.open(url, '_blank', 'noopener,noreferrer');
+      }
+    }
+    return Object.freeze({ url, window: opened, attemptId, snapshotCount: snapshots.length });
+  } catch (error) {
+    try {
+      if (opened.document && opened.document.body) {
+        opened.document.title = 'Free120 Review Error';
+        opened.document.body.textContent = `Free120 review failed: ${normalizeString(error && error.message, 'unknown error')}`;
+      }
+    } catch (_writeError) {}
+    throw error;
   }
-  return Object.freeze({ url, window: opened, attemptId, snapshotCount: snapshots.length });
 }
 
 export {

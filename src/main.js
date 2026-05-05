@@ -18,6 +18,7 @@ import { createWebfredSiteAdapter } from './webfred/adapter.js';
 import { createAnswerKeyCaptureController } from './answer-keys/controller.js';
 import { createTrackingEngine } from './tracking/engine.js';
 import { createActiveExamPill } from './ui/active-exam-pill.js';
+import { createLaunchHistory } from './ui/launch-history.js';
 import { buildReviewHtml, openReviewTab } from './review/blob-builder.js';
 import {
   createRuntimeState,
@@ -76,6 +77,23 @@ if (runtimeContext.pageKind === PAGE_KIND.WEBFRED) {
     logger.warn('Active-exam pill failed.', error);
   }
 }
+
+let launchHistory = null;
+if (runtimeContext.pageKind === PAGE_KIND.LAUNCH) {
+  try {
+    launchHistory = createLaunchHistory({
+      window,
+      document,
+      logger,
+      storage: attemptStore,
+      reviewLauncher(attemptId, attempt) {
+        return openReviewTab({ window, storage: attemptStore, attemptId, attempt });
+      },
+    });
+  } catch (error) {
+    logger.warn('Launch history UI failed.', error);
+  }
+}
 const helperSettings = Object.freeze({
   ...settingsStore,
   retryAnswerKeyCapture(captureOptions = {}) {
@@ -120,8 +138,12 @@ const api = Object.freeze({
   trackingEngineStatuses: TRACKING_ENGINE_STATUS,
   ui: Object.freeze({
     activeExamPill,
+    launchHistory,
     getActiveExamPill() {
       return activeExamPill;
+    },
+    getLaunchHistory() {
+      return launchHistory;
     },
   }),
   logger,
@@ -149,6 +171,7 @@ const services = Object.freeze({
   answerKeyCapture,
   trackingEngine,
   activeExamPill,
+  launchHistory,
 });
 
 if (runtimeContext.pageKind === PAGE_KIND.LAUNCH) {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { buildReviewHtml } from '../src/review/blob-builder.js';
 import { buildReviewModel } from '../src/review/model.js';
 import { ATTEMPT_STATUS } from '../src/core/constants.js';
+import { canOpenReviewFromHistory, formatHistoryAttemptRow, IMPORT_REPLACE_WARNING } from '../src/ui/launch-history.js';
 
 const attempt = Object.freeze({
   id: 'attempt-review-test',
@@ -80,4 +81,25 @@ assert.match(html, /Score summary/);
 assert.doesNotMatch(html, /fetch\s*\(/);
 assert.doesNotMatch(html, /XMLHttpRequest/);
 
-console.log('review tests passed');
+const historyAttempt = Object.freeze({
+  ...attempt,
+  reviewReady: true,
+  examIdentity: Object.freeze({ program: 'Step 1', examName: 'Free 120', section: 'Block 1' }),
+  launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 1, itemCount: 3 })]),
+  scoreSummary: Object.freeze({
+    overallScore: Object.freeze({ correct: 2, total: 3, percent: 66.7, label: '2/3' }),
+  }),
+});
+const historyRow = formatHistoryAttemptRow(historyAttempt);
+assert.equal(historyRow.exam, 'Step 1 · Free 120 · Block 1');
+assert.equal(historyRow.launchedScope, 'test · Block 1');
+assert.equal(historyRow.blockCount, '1');
+assert.equal(historyRow.score, '2/3 (66.7%)');
+assert.equal(historyRow.status, 'Completed');
+assert.equal(historyRow.reviewReady, true);
+assert.equal(canOpenReviewFromHistory(historyAttempt), true);
+assert.equal(canOpenReviewFromHistory({ ...historyAttempt, status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false }), false);
+assert.match(IMPORT_REPLACE_WARNING, /overwrites local attempts/);
+
+console.log('review and history tests passed');
