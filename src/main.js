@@ -17,6 +17,7 @@ import { createAttemptStore } from './storage/attempt-store.js';
 import { createWebfredSiteAdapter } from './webfred/adapter.js';
 import { createAnswerKeyCaptureController } from './answer-keys/controller.js';
 import { createTrackingEngine } from './tracking/engine.js';
+import { createActiveExamPill } from './ui/active-exam-pill.js';
 import {
   createRuntimeState,
   bootstrapLaunchPage,
@@ -54,6 +55,23 @@ const trackingEngine = createTrackingEngine({
   answerKeyCapture,
   runtimeContext,
 });
+let activeExamPill = null;
+if (runtimeContext.pageKind === PAGE_KIND.WEBFRED) {
+  try {
+    activeExamPill = createActiveExamPill({
+      window,
+      document,
+      logger,
+      settingsStore,
+      storage: attemptStore,
+      webfredAdapter,
+      answerKeyCapture,
+      trackingEngine,
+    });
+  } catch (error) {
+    logger.warn('Active-exam pill failed.', error);
+  }
+}
 const helperSettings = Object.freeze({
   ...settingsStore,
   retryAnswerKeyCapture(captureOptions = {}) {
@@ -90,6 +108,12 @@ const api = Object.freeze({
   tracking: trackingEngine,
   trackingEngine,
   trackingEngineStatuses: TRACKING_ENGINE_STATUS,
+  ui: Object.freeze({
+    activeExamPill,
+    getActiveExamPill() {
+      return activeExamPill;
+    },
+  }),
   logger,
   runtime: Object.freeze({
     context: runtimeContext,
@@ -114,6 +138,7 @@ const services = Object.freeze({
   webfredAdapter,
   answerKeyCapture,
   trackingEngine,
+  activeExamPill,
 });
 
 if (runtimeContext.pageKind === PAGE_KIND.LAUNCH) {

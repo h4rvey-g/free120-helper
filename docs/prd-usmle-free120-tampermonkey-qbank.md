@@ -253,13 +253,13 @@ The intended experience is similar to a lightweight UWorld overlay: test-mode an
 
 ### Phase 7: Active-exam UI
 
-- Render a small floating progress pill in WebFRED: `answered/total · Block n` from the existing tracking engine progress state.
-- Add settings access from the pill using the existing localStorage-backed settings store.
-- Allow user to hide/show pill and persist visibility through `settings.setPillVisible`.
-- Show non-intrusive tracking/key-capture details only inside settings, not in the main pill text.
-- Add `Review ready` action after completion; do not auto-open review.
-- Add manual finish flow with explicit warning for ambiguous or partial attempts.
-- Implement active-exam UI in `src/ui/active-exam-pill.js` and wire it through `src/main.js`; do not add UI logic to `src/tracking/engine.js`.
+- [x] Render a small floating progress pill in WebFRED: `answered/total · Block n` from the existing tracking engine progress state.
+- [x] Add settings access from the pill using the existing localStorage-backed settings store.
+- [x] Allow user to hide/show pill and persist visibility through `settings.setPillVisible`.
+- [x] Show non-intrusive tracking/key-capture details only inside settings, not in the main pill text.
+- [x] Add `Review ready` action after completion; do not auto-open review.
+- [x] Add manual finish flow with explicit warning for ambiguous or partial attempts.
+- [x] Implement active-exam UI in `src/ui/active-exam-pill.js` and wire it through `src/main.js`; do not add UI logic to `src/tracking/engine.js`.
 
 ### Phase 8: Completion and scoring
 
