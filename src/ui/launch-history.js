@@ -199,8 +199,27 @@ function formatAttemptStatus(attempt) {
   return status || 'Unknown';
 }
 
-function canOpenReviewFromHistory(attempt) {
+function getAttemptReviewEvidenceCount(attempt) {
   if (!isObject(attempt)) {
+    return 0;
+  }
+  const source = isObject(attempt.source) ? attempt.source : {};
+  const metadata = isObject(source.itemMetadataByQuestionId) ? source.itemMetadataByQuestionId : {};
+  const scoreSummary = isObject(attempt.scoreSummary) ? attempt.scoreSummary : {};
+  const scoreTotal = coerceNonNegativeInteger(scoreSummary.total, 0)
+    || coerceNonNegativeInteger(scoreSummary.overallScore && scoreSummary.overallScore.total, 0)
+    || (Array.isArray(scoreSummary.questionResults) ? scoreSummary.questionResults.length : 0);
+  return Math.max(
+    Array.isArray(attempt.questionIds) ? attempt.questionIds.length : 0,
+    Object.keys(isObject(attempt.responses) ? attempt.responses : {}).length,
+    Object.keys(isObject(attempt.correctAnswers) ? attempt.correctAnswers : {}).length,
+    Object.keys(metadata).length,
+    scoreTotal
+  );
+}
+
+function canOpenReviewFromHistory(attempt) {
+  if (!isObject(attempt) || getAttemptReviewEvidenceCount(attempt) <= 0) {
     return false;
   }
   return Boolean(attempt.reviewReady)

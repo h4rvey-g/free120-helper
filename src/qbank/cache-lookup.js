@@ -33,11 +33,17 @@ function isQBankCacheAttempt(attempt) {
 function getMetadata(candidate) {
   return plainObjectOrEmpty(candidate && candidate.metadata);
 }
-function qbankComponentKey(candidate) {
+function qbankUnscopedComponentKey(candidate) {
   const metadata = getMetadata(candidate);
   const componentId = normalizeString((candidate && candidate.componentId) || metadata.componentId, '');
   const medleyId = normalizeString((candidate && candidate.medleyId) || metadata.medleyId, '');
   return componentId && medleyId ? `${medleyId}\u0000${componentId}` : '';
+}
+function qbankComponentKey(candidate) {
+  const metadata = getMetadata(candidate);
+  const blockNumber = coercePositiveInteger((candidate && candidate.blockNumber) || metadata.blockNumber, 0);
+  const unscopedKey = qbankUnscopedComponentKey(candidate);
+  return unscopedKey && blockNumber ? `${blockNumber}\u0000${unscopedKey}` : '';
 }
 function qbankPositionKey(candidate) {
   const blockNumber = coercePositiveInteger(candidate && candidate.blockNumber, 0);
@@ -71,6 +77,20 @@ function createDirectAnswerEntry(questionId, correctAnswerId) {
     snapshot: null,
   });
 }
+function setUnscopedComponentEntry(context, key, entry) {
+  if (!key || !entry) {
+    return;
+  }
+  const existing = context.snapshotEntriesByUnscopedComponentKey.get(key);
+  if (!existing) {
+    context.snapshotEntriesByUnscopedComponentKey.set(key, entry);
+    return;
+  }
+  if (normalizeString(existing.qbankQuestionId, '') !== normalizeString(entry.qbankQuestionId, '')
+    || normalizeString(existing.qbankAttemptId, '') !== normalizeString(entry.qbankAttemptId, '')) {
+    context.ambiguousUnscopedComponentKeys.add(key);
+  }
+}
 
 async function loadQBankCaptureContext(storage, logger = null) {
   const loadedAt = new Date().toISOString();
@@ -81,6 +101,8 @@ async function loadQBankCaptureContext(storage, logger = null) {
     snapshotEntriesByQuestionId: new Map(),
     snapshotEntriesByComponentKey: new Map(),
     snapshotEntriesByPositionKey: new Map(),
+    snapshotEntriesByUnscopedComponentKey: new Map(),
+    ambiguousUnscopedComponentKeys: new Set(),
     loadErrors: [],
   };
   if (!storage || typeof storage.listAttempts !== 'function') {
@@ -115,6 +137,7 @@ async function loadQBankCaptureContext(storage, logger = null) {
         setIfAbsent(context.snapshotEntriesByQuestionId, entry.qbankQuestionId, entry);
         setIfAbsent(context.snapshotEntriesByComponentKey, entry.componentKey, entry);
         setIfAbsent(context.snapshotEntriesByPositionKey, entry.positionKey, entry);
+        setUnscopedComponentEntry(context, qbankUnscopedComponentKey(snapshot), entry);
         setIfAbsent(context.correctAnswersByQuestionId, entry.qbankQuestionId, entry.correctAnswerId);
       });
     } catch (error) {
@@ -127,6 +150,7 @@ async function loadQBankCaptureContext(storage, logger = null) {
   return Object.freeze({
     ...context,
     qbankAttemptIds: Object.freeze(uniqueNormalizedStrings(context.qbankAttemptIds)),
+    ambiguousUnscopedComponentKeys: Object.freeze(new Set(context.ambiguousUnscopedComponentKeys)),
     loadErrors: Object.freeze(context.loadErrors.slice()),
     available: context.qbankAttemptIds.length > 0,
   });
@@ -151,6 +175,17 @@ function resolveQBankEntryForItem(context, item) {
   const positionEntry = context.snapshotEntriesByPositionKey.get(qbankPositionKey(item));
   if (positionEntry) {
     return Object.freeze({ ...positionEntry, matchSource: 'block-position' });
+  }
+  const itemMetadata = getMetadata(item);
+  const itemBlockNumber = coercePositiveInteger((item && item.blockNumber) || itemMetadata.blockNumber, 0);
+  const unscopedComponentKey = !itemBlockNumber ? qbankUnscopedComponentKey(item) : '';
+  const unscopedMap = context.snapshotEntriesByUnscopedComponentKey;
+  const ambiguousKeys = context.ambiguousUnscopedComponentKeys;
+  const unscopedEntry = unscopedMap && unscopedComponentKey && !(ambiguousKeys && ambiguousKeys.has(unscopedComponentKey))
+    ? unscopedMap.get(unscopedComponentKey)
+    : null;
+  if (unscopedEntry) {
+    return Object.freeze({ ...unscopedEntry, matchSource: 'component-medley-unscoped' });
   }
   return null;
 }
@@ -220,7 +255,7 @@ function resolveQBankCaptureForItems(context, options = {}) {
     if (correctAnswerId) {
       correctAnswers[questionId] = correctAnswerId;
       if (match.snapshot) {
-        snapshotsByQuestionId[questionId] = cloneQBankSnapshotForQuestion(match, questionId);
+        snapshotsByQuestionId[questionId] = cloneQBankSnapshotForQuestion(match, questionId, item);
       }
       matchedQuestionIds.push(questionId);
       matchSourcesByQuestionId[questionId] = normalizeString(match.matchSource, 'qbank-cache');
@@ -251,13 +286,18 @@ function getAttemptItemMetadata(attempt, questionId) {
   const metadataByQuestionId = plainObjectOrEmpty(source.itemMetadataByQuestionId);
   return plainObjectOrEmpty(metadataByQuestionId[questionId]);
 }
-function cloneQBankSnapshotForQuestion(match, questionId) {
+function cloneQBankSnapshotForQuestion(match, questionId, item = {}) {
+  const itemBlockNumber = coercePositiveInteger(item && item.blockNumber, 0);
+  const itemIndex = coercePositiveInteger(item && item.itemIndex, 0);
   return Object.freeze({
     ...match.snapshot,
     id: `${normalizeString(match.snapshot.id, 'qbank-snapshot')}::qbank::${questionId}`,
     questionId,
+    blockNumber: itemBlockNumber || match.snapshot.blockNumber,
+    itemIndex: itemIndex || match.snapshot.itemIndex,
     metadata: Object.freeze({
       ...plainObjectOrEmpty(match.snapshot.metadata),
+      ...plainObjectOrEmpty(item),
       qbankCacheOriginalQuestionId: normalizeString(match.qbankQuestionId, ''),
       qbankCacheAttemptId: normalizeString(match.qbankAttemptId, ''),
       qbankCacheMatchSource: normalizeString(match.matchSource, 'qbank-cache'),
@@ -284,7 +324,7 @@ async function loadQBankSnapshotsForAttempt(storage, attempt, ownSnapshots = [],
     const metadata = getAttemptItemMetadata(attempt, questionId);
     const match = resolveQBankEntryForItem(context, { questionId, ...metadata });
     if (match && match.snapshot) {
-      qbankSnapshots.push(cloneQBankSnapshotForQuestion(match, questionId));
+      qbankSnapshots.push(cloneQBankSnapshotForQuestion(match, questionId, metadata));
     }
   });
   return qbankSnapshots;

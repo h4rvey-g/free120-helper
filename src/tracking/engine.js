@@ -11,6 +11,8 @@ import {
   coercePositiveInteger,
   uniqueNormalizedStrings,
   extractChoicesFromDom,
+  extractSelectedAnswerIdFromDom,
+  extractQuestionIdentityFromDom,
   safeElementText,
   findCurrentDomItemRoot,
 } from '../webfred/adapter.js';
@@ -72,13 +74,16 @@ function isSupportedMcqTrackingState(adapterState) {
 function buildTrackingAttemptResumeKey(adapterState, runtimeContext) {
   const scope = adapterState && adapterState.launchedScope ? adapterState.launchedScope : {};
   const identity = adapterState && adapterState.examIdentity ? adapterState.examIdentity : {};
+  const allBlockLaunch = adapterStateSuggestsAllBlockLaunch(adapterState);
+  const currentBlock = adapterState && adapterState.currentBlock ? adapterState.currentBlock : '';
   const payload = {
     origin: runtimeContext && runtimeContext.origin,
     pathname: runtimeContext && runtimeContext.pathname,
     examProgram: identity.program || '',
     examName: identity.examName || '',
     section: identity.section || '',
-    scopeBlock: scope.block || scope.selectedBlock || scope.launchedBlock || '',
+    scopeBlock: scope.block || scope.selectedBlock || scope.launchedBlock || (allBlockLaunch ? '' : currentBlock),
+    currentBlock: allBlockLaunch ? '' : currentBlock,
     scopeMode: scope.mode || scope.testMode || scope.scope || '',
   };
   return `webfred-attempt:${stableHashString(stableJsonStringify(payload))}`;
@@ -159,8 +164,17 @@ function getTrackingItemList(adapterState) {
   if (adapterState && adapterState.currentItem) {
     const current = normalizeTrackingItem(adapterState.currentItem, adapterState, normalized.length);
     const existingIndex = normalized.findIndex((item) => item.questionId === current.questionId);
-    if (existingIndex >= 0) {
-      normalized[existingIndex] = Object.freeze({ ...normalized[existingIndex], ...current, current: true });
+    const samePositionIndex = existingIndex >= 0 ? -1 : normalized.findIndex((item) => {
+      const samePosition = coercePositiveInteger(item && item.blockNumber, 0) === coercePositiveInteger(current.blockNumber, 0)
+        && coercePositiveInteger(item && item.itemIndex, 0) === coercePositiveInteger(current.itemIndex, 0);
+      const replaceableIdentity = !normalizeString(item && item.questionId, '')
+        || normalizeString(item && item.questionId, '').startsWith('webfred:untrusted:')
+        || Boolean(current.componentId || current.medleyId);
+      return samePosition && replaceableIdentity;
+    });
+    const targetIndex = existingIndex >= 0 ? existingIndex : samePositionIndex;
+    if (targetIndex >= 0) {
+      normalized[targetIndex] = Object.freeze({ ...normalized[targetIndex], ...current, current: true });
     } else {
       normalized.push(Object.freeze({ ...current, current: true }));
     }
@@ -181,12 +195,210 @@ function getTrackingItemList(adapterState) {
   });
 }
 
-function mergeTrackingQuestionIds(existingQuestionIds, itemList, currentQuestionId) {
+function getTrackingItemQuestionIds(itemList, currentQuestionId = '') {
   return uniqueNormalizedStrings([
-    ...(Array.isArray(existingQuestionIds) ? existingQuestionIds : []),
-    ...(Array.isArray(itemList) ? itemList.map((item) => item.questionId) : []),
+    ...(Array.isArray(itemList) ? itemList.map((item) => item && item.questionId) : []),
     currentQuestionId,
   ]);
+}
+
+function adapterStateSuggestsAllBlockLaunch(adapterState) {
+  const scope = isPlainObject(adapterState && adapterState.launchedScope) ? adapterState.launchedScope : {};
+  const modeText = [scope.mode, scope.testMode, scope.scope, scope.launchMode, scope.deliveryMode]
+    .map((value) => normalizeString(value, ''))
+    .join(' ')
+    .toLowerCase();
+  return /\b(?:all|full|entire|whole|complete)\b/.test(modeText);
+}
+
+function shouldUseScopedQuestionSet(adapterState, itemList) {
+  return Array.isArray(itemList) && itemList.length > 1 && !adapterStateSuggestsAllBlockLaunch(adapterState);
+}
+
+function mergeTrackingQuestionIds(existingQuestionIds, itemList, currentQuestionId, options = {}) {
+  const scopedQuestionIds = getTrackingItemQuestionIds(itemList, currentQuestionId);
+  if (options.replaceWithScopedItems === true && scopedQuestionIds.length) {
+    return scopedQuestionIds;
+  }
+  return uniqueNormalizedStrings([
+    ...(Array.isArray(existingQuestionIds) ? existingQuestionIds : []),
+    ...scopedQuestionIds,
+  ]);
+}
+
+function filterRecordToQuestionIds(record, questionIds) {
+  const allowed = new Set(Array.isArray(questionIds) ? questionIds : []);
+  return Object.freeze(Object.fromEntries(Object.entries(isPlainObject(record) ? record : {}).filter(([questionId]) => allowed.has(questionId))));
+}
+
+function filterTimelineToQuestionIds(entries, questionIds) {
+  const allowed = new Set(Array.isArray(questionIds) ? questionIds : []);
+  return Object.freeze((Array.isArray(entries) ? entries : []).filter((entry) => allowed.has(normalizeString(entry && entry.questionId, ''))));
+}
+
+function filterQuestionIds(questionIds, allowedQuestionIds) {
+  const allowed = new Set(Array.isArray(allowedQuestionIds) ? allowedQuestionIds : []);
+  return normalizeIdArray(questionIds || []).filter((questionId) => allowed.has(questionId));
+}
+
+function trackingPositionKey(candidate) {
+  const blockNumber = coercePositiveInteger(candidate && candidate.blockNumber, 0);
+  const itemIndex = coercePositiveInteger(candidate && candidate.itemIndex, 0);
+  return blockNumber && itemIndex ? `${blockNumber}\u0000${itemIndex}` : '';
+}
+
+function trackingComponentKey(candidate) {
+  const blockNumber = coercePositiveInteger(candidate && candidate.blockNumber, 0);
+  const componentId = normalizeString(candidate && candidate.componentId, '');
+  const medleyId = normalizeString(candidate && candidate.medleyId, '');
+  return blockNumber && componentId && medleyId ? `${blockNumber}\u0000${medleyId}\u0000${componentId}` : '';
+}
+
+function getStoredTrackingMetadata(existingAttempt, questionId) {
+  const source = isPlainObject(existingAttempt && existingAttempt.source) ? existingAttempt.source : {};
+  const metadataByQuestionId = isPlainObject(source.itemMetadataByQuestionId) ? source.itemMetadataByQuestionId : {};
+  const metadata = isPlainObject(metadataByQuestionId[questionId]) ? metadataByQuestionId[questionId] : {};
+  const timingByQuestionId = isPlainObject(existingAttempt && existingAttempt.timingByQuestionId) ? existingAttempt.timingByQuestionId : {};
+  const timing = isPlainObject(timingByQuestionId[questionId]) ? timingByQuestionId[questionId] : {};
+  return Object.freeze({
+    questionId,
+    blockNumber: coercePositiveInteger(metadata.blockNumber || timing.blockNumber, 0),
+    itemIndex: coercePositiveInteger(metadata.itemIndex || timing.itemIndex, 0),
+    componentId: normalizeString(metadata.componentId, ''),
+    medleyId: normalizeString(metadata.medleyId, ''),
+  });
+}
+
+function createScopedTrackingQuestionMapper(existingAttempt, itemList, currentQuestionId = '') {
+  const items = Array.isArray(itemList) ? itemList : [];
+  const currentQuestionIds = new Set(getTrackingItemQuestionIds(items, currentQuestionId));
+  const blockNumbers = new Set(items.map((item) => coercePositiveInteger(item && item.blockNumber, 0)).filter(Boolean));
+  const byPosition = new Map();
+  const byComponent = new Map();
+  items.forEach((item) => {
+    const questionId = normalizeString(item && item.questionId, '');
+    if (!questionId) {
+      return;
+    }
+    setIfAbsentMap(byPosition, trackingPositionKey(item), questionId);
+    setIfAbsentMap(byComponent, trackingComponentKey(item), questionId);
+  });
+
+  function mapQuestionId(questionId) {
+    const normalizedQuestionId = normalizeString(questionId, '');
+    if (!normalizedQuestionId) {
+      return '';
+    }
+    if (currentQuestionIds.has(normalizedQuestionId)) {
+      return normalizedQuestionId;
+    }
+    const metadata = getStoredTrackingMetadata(existingAttempt, normalizedQuestionId);
+    const metadataBlockNumber = coercePositiveInteger(metadata.blockNumber, 0);
+    if (!metadataBlockNumber || (blockNumbers.size && !blockNumbers.has(metadataBlockNumber))) {
+      return '';
+    }
+    return byComponent.get(trackingComponentKey(metadata))
+      || byPosition.get(trackingPositionKey(metadata))
+      || '';
+  }
+
+  function mapQuestionIds(questionIds) {
+    return uniqueNormalizedStrings((Array.isArray(questionIds) ? questionIds : []).map(mapQuestionId));
+  }
+
+  function mapRecord(record) {
+    const mapped = {};
+    Object.entries(isPlainObject(record) ? record : {}).forEach(([questionId, value]) => {
+      const mappedQuestionId = mapQuestionId(questionId);
+      if (mappedQuestionId) {
+        mapped[mappedQuestionId] = value;
+      }
+    });
+    return Object.freeze(mapped);
+  }
+
+  function mapTimeline(entries) {
+    return Object.freeze((Array.isArray(entries) ? entries : []).map((entry) => {
+      const mappedQuestionId = mapQuestionId(entry && entry.questionId);
+      return mappedQuestionId ? Object.freeze({ ...entry, questionId: mappedQuestionId }) : null;
+    }).filter(Boolean));
+  }
+
+  return Object.freeze({ mapQuestionId, mapQuestionIds, mapRecord, mapTimeline });
+}
+
+function setIfAbsentMap(map, key, value) {
+  if (key && value && !map.has(key)) {
+    map.set(key, value);
+  }
+}
+
+function normalizeTrackingResponseAliases(source) {
+  const aliases = isPlainObject(source && source.responseAliases) ? source.responseAliases : {};
+  return Object.freeze({
+    byPosition: Object.freeze(normalizeRecord(aliases.byPosition || source && source.responsesByPosition || {})),
+    byComponent: Object.freeze(normalizeRecord(aliases.byComponent || source && source.responsesByComponent || {})),
+  });
+}
+
+function addTrackingResponseAlias(aliasDraft, item, answerId) {
+  const normalizedAnswerId = normalizeString(answerId, '');
+  if (!item || !normalizedAnswerId) {
+    return;
+  }
+  const positionKey = trackingPositionKey(item);
+  if (positionKey) {
+    aliasDraft.byPosition[positionKey] = normalizedAnswerId;
+  }
+  const componentKey = trackingComponentKey(item);
+  if (componentKey) {
+    aliasDraft.byComponent[componentKey] = normalizedAnswerId;
+  }
+}
+
+function buildTrackingResponseAliases(existingAttempt, itemList, responses = {}, changes = []) {
+  const existingSource = isPlainObject(existingAttempt && existingAttempt.source) ? existingAttempt.source : {};
+  const existingAliases = normalizeTrackingResponseAliases(existingSource);
+  const aliasDraft = {
+    byPosition: { ...existingAliases.byPosition },
+    byComponent: { ...existingAliases.byComponent },
+  };
+  Object.entries(isPlainObject(responses) ? responses : {}).forEach(([questionId, answerId]) => {
+    const item = (Array.isArray(itemList) ? itemList : []).find((candidate) => normalizeString(candidate && candidate.questionId, '') === questionId)
+      || getStoredTrackingMetadata(existingAttempt, questionId);
+    addTrackingResponseAlias(aliasDraft, item, answerId);
+  });
+  (Array.isArray(changes) ? changes : []).forEach((change) => {
+    addTrackingResponseAlias(aliasDraft, change && change.item, change && change.toAnswerId);
+  });
+  return Object.freeze({
+    byPosition: Object.freeze(aliasDraft.byPosition),
+    byComponent: Object.freeze(aliasDraft.byComponent),
+  });
+}
+
+function getTrackingResponseAliasForItem(responseAliases, item) {
+  if (!item || !responseAliases) {
+    return '';
+  }
+  const byComponent = isPlainObject(responseAliases.byComponent) ? responseAliases.byComponent : {};
+  const byPosition = isPlainObject(responseAliases.byPosition) ? responseAliases.byPosition : {};
+  return normalizeString(byComponent[trackingComponentKey(item)], normalizeString(byPosition[trackingPositionKey(item)], ''));
+}
+
+function fillScopedResponsesFromAliases(responses, itemList, responseAliases) {
+  const draft = { ...(isPlainObject(responses) ? responses : {}) };
+  (Array.isArray(itemList) ? itemList : []).forEach((item) => {
+    const questionId = normalizeString(item && item.questionId, '');
+    if (!questionId || normalizeString(draft[questionId], '')) {
+      return;
+    }
+    const aliasAnswerId = getTrackingResponseAliasForItem(responseAliases, item);
+    if (aliasAnswerId) {
+      draft[questionId] = aliasAnswerId;
+    }
+  });
+  return Object.freeze(draft);
 }
 
 function buildTrackingBlockMetadata(adapterState, itemList, responses = {}) {
@@ -293,8 +505,8 @@ function getTrackingSelectedAnswerId(questionId, item, adapterState, choices = [
   }
   const selectedChoice = (Array.isArray(choices) ? choices : []).find((choice) => choice && choice.selected);
   return firstNonEmpty([
-    item && item.selectedAnswerId,
     selectedChoice && selectedChoice.id,
+    item && item.selectedAnswerId,
   ]);
 }
 
@@ -588,6 +800,42 @@ function mergeTrackingChoices(stateChoices, domChoices) {
   return merged;
 }
 
+function getSnapshotContentSource(qbankSnapshot, root, stateContent) {
+  if (qbankSnapshot && normalizeString(qbankSnapshot.renderedHtml || qbankSnapshot.promptHtml, '')) {
+    return 'qbank-cache';
+  }
+  if (root && normalizeString(root.innerHTML, '')) {
+    return 'dom-current-item';
+  }
+  if (stateContent && normalizeString(stateContent.renderedHtml || stateContent.promptHtml || stateContent.answerBoxHtml, '')) {
+    return 'adapter-current-content';
+  }
+  return 'unavailable';
+}
+
+function buildRenderedHtmlFromCurrentContent(stateContent) {
+  const renderedHtml = normalizeString(stateContent && stateContent.renderedHtml, '');
+  if (renderedHtml) {
+    return renderedHtml;
+  }
+  const promptHtml = normalizeString(stateContent && stateContent.promptHtml, '');
+  const answerBoxHtml = normalizeString(stateContent && stateContent.answerBoxHtml, '');
+  return promptHtml || answerBoxHtml ? `<div class="f120-current-content-snapshot">${promptHtml}${answerBoxHtml}</div>` : '';
+}
+
+function shouldReloadQBankCaptureContext(context, attempt) {
+  if (!context || !context.available) {
+    return true;
+  }
+  const summary = isPlainObject(attempt && attempt.answerKeyCapture) ? attempt.answerKeyCapture : {};
+  const status = normalizeString(summary.status, '');
+  const failureReason = normalizeString(summary.failureReason, '');
+  return status === 'failed'
+    || status === 'partial'
+    || failureReason === 'qbank-cache-missing'
+    || failureReason === 'qbank-cache-no-matches';
+}
+
 function getCorrectAnswerForQuestion(questionId, attempt, qbankCaptureResult) {
   const fromAttempt = attempt && attempt.correctAnswers ? normalizeString(attempt.correctAnswers[questionId], '') : '';
   if (fromAttempt) {
@@ -628,15 +876,27 @@ function createTrackingQuestionSnapshot(candidate) {
   const qbankSource = isPlainObject(candidate.qbankCaptureResult && candidate.qbankCaptureResult.source) ? candidate.qbankCaptureResult.source : {};
   const qbankMatchSourcesByQuestionId = isPlainObject(qbankSource.matchSourcesByQuestionId) ? qbankSource.matchSourcesByQuestionId : {};
   const qbankAttemptIds = Array.isArray(qbankSource.qbankAttemptIds) ? qbankSource.qbankAttemptIds : [];
-  const liveChoices = mergeTrackingChoices(stateContent.choices, root ? extractChoicesFromDom(root) : []);
-  const choices = mergeTrackingChoices(qbankSnapshot && qbankSnapshot.choices, []);
+  const domChoices = root ? extractChoicesFromDom(root) : [];
+  const liveChoices = mergeTrackingChoices(stateContent.choices, domChoices);
+  const choices = mergeTrackingChoices(qbankSnapshot && qbankSnapshot.choices, liveChoices);
   const selectedAnswerId = getTrackingSelectedAnswerId(questionId, item, adapterState, liveChoices);
   const correctAnswerId = getCorrectAnswerForQuestion(questionId, candidate.attempt, candidate.qbankCaptureResult);
   const notes = root ? extractTrackingNotesFromDom(root) : Object.freeze({ status: 'unavailable', text: '', fields: [] });
   const annotations = root ? extractTrackingAnnotationsFromDom(root) : Object.freeze({ status: 'unavailable', highlights: [], strikeouts: [] });
-  const renderedHtml = normalizeString(qbankSnapshot && qbankSnapshot.renderedHtml, '');
-  const promptHtml = normalizeString(qbankSnapshot && qbankSnapshot.promptHtml, '');
-  const resourceUrls = uniqueNormalizedStrings(Array.isArray(qbankSnapshot && qbankSnapshot.resourceUrls) ? qbankSnapshot.resourceUrls : []);
+  const contentSource = getSnapshotContentSource(qbankSnapshot, root, stateContent);
+  const renderedHtml = firstNonEmpty([
+    qbankSnapshot && qbankSnapshot.renderedHtml,
+    root && root.outerHTML,
+    buildRenderedHtmlFromCurrentContent(stateContent),
+  ]);
+  const promptHtml = firstNonEmpty([
+    qbankSnapshot && qbankSnapshot.promptHtml,
+    stateContent && stateContent.promptHtml,
+  ]);
+  const resourceUrls = uniqueNormalizedStrings([
+    ...(Array.isArray(qbankSnapshot && qbankSnapshot.resourceUrls) ? qbankSnapshot.resourceUrls : []),
+    ...(Array.isArray(stateContent && stateContent.resourceUrls) ? stateContent.resourceUrls : []),
+  ]);
   const timingRecord = candidate.timingByQuestionId && candidate.timingByQuestionId[questionId] ? candidate.timingByQuestionId[questionId] : null;
   const contentHash = stableHashString([
     questionId,
@@ -659,8 +919,8 @@ function createTrackingQuestionSnapshot(candidate) {
       identitySource: normalizeString(item.identitySource, ''),
       adapterStatus: normalizeString(adapterState.status, ''),
       adapterSource: normalizeString(adapterState.source, ''),
-      capturedFromDom: false,
-      questionContentSource: qbankSnapshot ? 'qbank-cache' : 'qbank-cache-missing',
+      capturedFromDom: contentSource === 'dom-current-item',
+      questionContentSource: contentSource,
       qbankCacheAttemptId: normalizeString(qbankMetadata.qbankCacheAttemptId || qbankMetadata.qbankFallbackAttemptId || qbankAttemptIds[0], ''),
       qbankCacheOriginalQuestionId: qbankOriginalQuestionId,
       qbankCacheMatchSource: normalizeString(qbankMetadata.qbankCacheMatchSource || qbankMatchSourcesByQuestionId[questionId], ''),
@@ -754,29 +1014,47 @@ function applyNativeCompletionToTrackingPatch(attempt, patch, adapterState, reas
 function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, currentItem, mergeResult, timingByQuestionId, markedQuestionIds, qbankCaptureResult, reason) {
   const existingResponses = mergeResult.responses;
   const existingQuestionIds = existingAttempt && existingAttempt.questionIds ? existingAttempt.questionIds : [];
-  const questionIds = mergeTrackingQuestionIds(existingQuestionIds, itemList, currentItem && currentItem.questionId);
-  const progress = buildAnsweredProgressByBlock(questionIds, itemList, existingResponses);
-  const correctAnswers = qbankCaptureResult && qbankCaptureResult.correctAnswers ? qbankCaptureResult.correctAnswers : {};
+  const existingSource = isPlainObject(existingAttempt && existingAttempt.source) ? existingAttempt.source : {};
+  const scopedQuestionSet = shouldUseScopedQuestionSet(adapterState, itemList);
+  const scopedMapper = scopedQuestionSet ? createScopedTrackingQuestionMapper(existingAttempt, itemList, currentItem && currentItem.questionId) : null;
+  const mappedExistingQuestionIds = scopedMapper ? scopedMapper.mapQuestionIds(existingQuestionIds) : existingQuestionIds;
+  const questionIds = mergeTrackingQuestionIds(mappedExistingQuestionIds, itemList, currentItem && currentItem.questionId, { replaceWithScopedItems: scopedQuestionSet });
+  const mappedExistingResponses = scopedMapper ? scopedMapper.mapRecord(existingResponses) : existingResponses;
+  const aliasFilledResponses = scopedQuestionSet
+    ? fillScopedResponsesFromAliases(mappedExistingResponses, itemList, normalizeTrackingResponseAliases(existingSource))
+    : existingResponses;
+  const responses = scopedQuestionSet ? filterRecordToQuestionIds(aliasFilledResponses, questionIds) : existingResponses;
+  const responseAliases = buildTrackingResponseAliases(existingAttempt, itemList, responses, mergeResult.changes);
+  const progress = buildAnsweredProgressByBlock(questionIds, itemList, responses);
+  const qbankCorrectAnswers = qbankCaptureResult && qbankCaptureResult.correctAnswers ? qbankCaptureResult.correctAnswers : {};
+  const correctAnswers = scopedMapper ? { ...scopedMapper.mapRecord(existingAttempt && existingAttempt.correctAnswers), ...qbankCorrectAnswers } : qbankCorrectAnswers;
   const qbankSummary = qbankCaptureResult && qbankCaptureResult.summary ? qbankCaptureResult.summary : null;
   const qbankSource = qbankCaptureResult && qbankCaptureResult.source ? qbankCaptureResult.source : null;
-  const existingSource = isPlainObject(existingAttempt && existingAttempt.source) ? existingAttempt.source : {};
   return Object.freeze({
     schemaVersion: DB_SCHEMA.VERSION,
     scriptVersion: SCRIPT.VERSION,
     status: ATTEMPT_STATUS.IN_PROGRESS,
     examIdentity: normalizeRecord(adapterState.examIdentity || (existingAttempt && existingAttempt.examIdentity) || {}),
     launchedScope: normalizeRecord(adapterState.launchedScope || (existingAttempt && existingAttempt.launchedScope) || {}),
-    blockMetadata: buildTrackingBlockMetadata(adapterState, itemList, existingResponses),
+    blockMetadata: buildTrackingBlockMetadata(adapterState, itemList, responses),
     questionIds,
-    questionCount: Math.max(questionIds.length, coercePositiveInteger(adapterState.itemCount, 0), coercePositiveInteger(existingAttempt && existingAttempt.questionCount, 0)),
-    responses: existingResponses,
-    answerTimeline: appendTrackingAnswerTimeline(existingAttempt && existingAttempt.answerTimeline, mergeResult.changes, existingAttempt.id, reason, adapterState),
-    correctAnswers,
+    questionCount: scopedQuestionSet
+      ? Math.max(questionIds.length, coercePositiveInteger(adapterState.itemCount, 0))
+      : Math.max(questionIds.length, coercePositiveInteger(adapterState.itemCount, 0), coercePositiveInteger(existingAttempt && existingAttempt.questionCount, 0)),
+    responses,
+    answerTimeline: scopedQuestionSet
+      ? filterTimelineToQuestionIds((scopedMapper ? scopedMapper.mapTimeline(appendTrackingAnswerTimeline(existingAttempt && existingAttempt.answerTimeline, mergeResult.changes, existingAttempt.id, reason, adapterState)) : appendTrackingAnswerTimeline(existingAttempt && existingAttempt.answerTimeline, mergeResult.changes, existingAttempt.id, reason, adapterState)), questionIds)
+      : appendTrackingAnswerTimeline(existingAttempt && existingAttempt.answerTimeline, mergeResult.changes, existingAttempt.id, reason, adapterState),
+    correctAnswers: scopedQuestionSet ? filterRecordToQuestionIds(correctAnswers, questionIds) : correctAnswers,
     answerKeyCapture: qbankSummary ? normalizeRecord(qbankSummary) : normalizeRecord((existingAttempt && existingAttempt.answerKeyCapture) || {}),
-    markedQuestionIds,
-    notesByQuestionId: normalizeRecord((existingAttempt && existingAttempt.notesByQuestionId) || {}),
-    annotationsByQuestionId: normalizeRecord((existingAttempt && existingAttempt.annotationsByQuestionId) || {}),
-    timingByQuestionId,
+    markedQuestionIds: scopedQuestionSet ? filterQuestionIds(scopedMapper ? scopedMapper.mapQuestionIds(markedQuestionIds) : markedQuestionIds, questionIds) : markedQuestionIds,
+    notesByQuestionId: scopedQuestionSet
+      ? filterRecordToQuestionIds(scopedMapper ? scopedMapper.mapRecord(existingAttempt && existingAttempt.notesByQuestionId) : existingAttempt && existingAttempt.notesByQuestionId, questionIds)
+      : normalizeRecord((existingAttempt && existingAttempt.notesByQuestionId) || {}),
+    annotationsByQuestionId: scopedQuestionSet
+      ? filterRecordToQuestionIds(scopedMapper ? scopedMapper.mapRecord(existingAttempt && existingAttempt.annotationsByQuestionId) : existingAttempt && existingAttempt.annotationsByQuestionId, questionIds)
+      : normalizeRecord((existingAttempt && existingAttempt.annotationsByQuestionId) || {}),
+    timingByQuestionId: scopedQuestionSet ? filterRecordToQuestionIds(scopedMapper ? scopedMapper.mapRecord(timingByQuestionId) : timingByQuestionId, questionIds) : timingByQuestionId,
     source: Object.freeze({
       ...existingSource,
       adapterStatus: adapterState.status,
@@ -784,7 +1062,10 @@ function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, curr
       trackingEngineStatus: adapterState.status === WEBFRED_ADAPTER_STATUS.READY ? TRACKING_ENGINE_STATUS.TRACKING : TRACKING_ENGINE_STATUS.DEGRADED,
       progress,
       qbankCache: qbankSource ? normalizeRecord(qbankSource) : normalizeRecord(existingSource.qbankCache || {}),
-      itemMetadataByQuestionId: buildTrackingItemMetadataByQuestionId(existingAttempt, itemList, currentItem),
+      responseAliases,
+      itemMetadataByQuestionId: scopedQuestionSet
+        ? filterRecordToQuestionIds(buildTrackingItemMetadataByQuestionId(existingAttempt, itemList, currentItem), questionIds)
+        : buildTrackingItemMetadataByQuestionId(existingAttempt, itemList, currentItem),
       lastTrackingReason: normalizeString(reason, 'state-update'),
       lastTrackedAt: nowIso(),
     }),
@@ -895,29 +1176,81 @@ async function persistTrackingState(options) {
   const root = getTrackingDomRoot(adapterDocument, adapterWindow);
   const stateChoices = adapterState.currentContent && Array.isArray(adapterState.currentContent.choices) ? adapterState.currentContent.choices : [];
   const domChoices = root ? extractChoicesFromDom(root) : [];
-  const answerEntries = collectTrackingAnswerEntries(adapterState, itemList, mergeTrackingChoices(stateChoices, domChoices));
+  let effectiveAdapterState = adapterState;
+  let effectiveItemList = itemList;
+  let effectiveCurrentItem = currentItem;
+  if (root) {
+    const domIdentity = extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow);
+    const rootQuestionId = normalizeString(domIdentity && domIdentity.questionId, '');
+    const selectedFromDom = firstNonEmpty([(domChoices.find((choice) => choice && choice.selected) || {}).id, root ? extractSelectedAnswerIdFromDom(root) : '']);
+    const effectiveCurrentQuestionId = normalizeString(effectiveCurrentItem && effectiveCurrentItem.questionId, '');
+    const effectiveCurrentSelectedAnswerId = firstNonEmpty([
+      effectiveAdapterState && effectiveAdapterState.answers ? effectiveAdapterState.answers[effectiveCurrentQuestionId] : '',
+      effectiveCurrentItem && effectiveCurrentItem.selectedAnswerId,
+    ]);
+    const shouldPreferCapturedAdapterState = Boolean(options.preferAdapterState && effectiveCurrentSelectedAnswerId);
+    if (rootQuestionId && rootQuestionId !== effectiveCurrentQuestionId && !shouldPreferCapturedAdapterState) {
+      const rootItem = normalizeTrackingItem({
+        questionId: rootQuestionId,
+        componentId: domIdentity.componentId,
+        medleyId: domIdentity.medleyId,
+        blockNumber: domIdentity.blockNumber || adapterState.currentBlock || (currentItem && currentItem.blockNumber) || 1,
+        itemIndex: domIdentity.itemIndex || (currentItem && currentItem.itemIndex) || 1,
+        selectedAnswerId: selectedFromDom,
+        current: true,
+        identitySource: domIdentity.identitySource || 'dom-current-root',
+        source: adapterState.source,
+      }, adapterState, Math.max(0, effectiveItemList.length - 1));
+      const replaced = effectiveItemList.map((item) => {
+        const samePosition = coercePositiveInteger(item && item.blockNumber, 0) === coercePositiveInteger(rootItem.blockNumber, 0)
+          && coercePositiveInteger(item && item.itemIndex, 0) === coercePositiveInteger(rootItem.itemIndex, 0);
+        return samePosition || item.questionId === rootItem.questionId ? rootItem : item;
+      });
+      if (!replaced.some((item) => item.questionId === rootItem.questionId)) {
+        replaced.push(rootItem);
+      }
+      effectiveItemList = replaced;
+      effectiveCurrentItem = rootItem;
+    } else if (selectedFromDom) {
+      effectiveCurrentItem = Object.freeze({ ...effectiveCurrentItem, selectedAnswerId: selectedFromDom, current: true });
+      effectiveItemList = effectiveItemList.map((item) => item.questionId === effectiveCurrentItem.questionId ? Object.freeze({ ...item, selectedAnswerId: selectedFromDom, current: true }) : item);
+    }
+    if ((effectiveCurrentItem && effectiveCurrentItem.questionId) && (effectiveCurrentItem !== currentItem || effectiveItemList !== itemList || selectedFromDom)) {
+      effectiveAdapterState = Object.freeze({
+        ...adapterState,
+        currentItem: effectiveCurrentItem,
+        itemList: Object.freeze(effectiveItemList),
+        answers: Object.freeze(selectedFromDom ? { ...(adapterState.answers || {}), [effectiveCurrentItem.questionId]: selectedFromDom } : (adapterState.answers || {})),
+      });
+    }
+  }
+  const currentChoices = mergeTrackingChoices(stateChoices, domChoices);
+  const answerEntries = collectTrackingAnswerEntries(effectiveAdapterState, effectiveItemList, currentChoices);
   const mergeResult = mergeTrackingResponses(attempt.responses || {}, answerEntries);
-  const markedQuestionIds = mergeTrackingMarkedQuestionIds(attempt.markedQuestionIds || [], adapterState, itemList);
+  const markedQuestionIds = mergeTrackingMarkedQuestionIds(attempt.markedQuestionIds || [], effectiveAdapterState, effectiveItemList);
   const timingByQuestionId = flushTrackingTiming(
     timingState,
-    currentItem,
+    effectiveCurrentItem,
     attempt.timingByQuestionId || {},
     adapterWindow,
     options.reason || 'state-update',
     { pause: Boolean(options.pauseTiming || adapterDocument.visibilityState === 'hidden') }
   );
-  const trackingQuestionIds = mergeTrackingQuestionIds(attempt.questionIds || [], itemList, currentItem && currentItem.questionId);
+  const scopedQuestionSet = shouldUseScopedQuestionSet(effectiveAdapterState, effectiveItemList);
+  const trackingQuestionIds = mergeTrackingQuestionIds(attempt.questionIds || [], effectiveItemList, effectiveCurrentItem && effectiveCurrentItem.questionId, { replaceWithScopedItems: scopedQuestionSet });
   const qbankCaptureResult = resolveQBankCaptureForItems(options.qbankCaptureContext, {
-    itemList,
-    currentItem,
+    itemList: effectiveItemList,
+    currentItem: effectiveCurrentItem,
     questionIds: trackingQuestionIds,
-    expectedCount: Math.max(trackingQuestionIds.length, coercePositiveInteger(adapterState.itemCount, 0), coercePositiveInteger(attempt && attempt.questionCount, 0)),
+    expectedCount: scopedQuestionSet
+      ? Math.max(trackingQuestionIds.length, coercePositiveInteger(effectiveAdapterState.itemCount, 0))
+      : Math.max(trackingQuestionIds.length, coercePositiveInteger(effectiveAdapterState.itemCount, 0), coercePositiveInteger(attempt && attempt.questionCount, 0)),
   });
   let patch = buildTrackingAttemptPatch(
     attempt,
-    adapterState,
-    itemList,
-    currentItem,
+    effectiveAdapterState,
+    effectiveItemList,
+    effectiveCurrentItem,
     mergeResult,
     timingByQuestionId,
     markedQuestionIds,
@@ -925,14 +1258,14 @@ async function persistTrackingState(options) {
     options.reason || 'state-update'
   );
 
-  const questionId = currentItem.questionId;
-  if (root || adapterState.currentContent) {
+  const questionId = effectiveCurrentItem.questionId;
+  if (root || effectiveAdapterState.currentContent) {
     const snapshot = createTrackingQuestionSnapshot({
       attemptId: attempt.id,
       attempt: { ...attempt, ...patch },
-      adapterState,
-      itemList,
-      item: currentItem,
+      adapterState: effectiveAdapterState,
+      itemList: effectiveItemList,
+      item: effectiveCurrentItem,
       root,
       document: adapterDocument,
       timingByQuestionId,
@@ -952,7 +1285,7 @@ async function persistTrackingState(options) {
   patch = applyNativeCompletionToTrackingPatch(
     { ...attempt, ...patch },
     patch,
-    adapterState,
+    effectiveAdapterState,
     options.reason || 'state-update'
   );
 
@@ -960,9 +1293,9 @@ async function persistTrackingState(options) {
   if (attempt.status === ATTEMPT_STATUS.IN_PROGRESS) {
     await storage.saveInProgressState({
       attemptId: attempt.id,
-      pageContext: buildTrackingPageContext(adapterState, options.runtimeContext),
-      activeBlock: currentItem.blockNumber || adapterState.currentBlock || 1,
-      activeQuestionId: currentItem.questionId,
+      pageContext: buildTrackingPageContext(effectiveAdapterState, options.runtimeContext),
+      activeBlock: effectiveCurrentItem.blockNumber || effectiveAdapterState.currentBlock || 1,
+      activeQuestionId: effectiveCurrentItem.questionId,
       answeredQuestionIds: Object.keys(attempt.responses || {}).filter((qid) => normalizeString(attempt.responses[qid], '')),
       visitedQuestionIds: attempt.questionIds,
       state: {
@@ -1033,6 +1366,9 @@ function createTrackingEngine(options = {}) {
         return null;
       }
       const adapterState = readLatestState(flushOptions.adapterState || null);
+      if (shouldReloadQBankCaptureContext(qbankCaptureContext, attempt)) {
+        qbankCaptureContext = await loadQBankCaptureContext(storage, logger);
+      }
       attempt = await persistTrackingState({
         storage,
         logger,
@@ -1045,6 +1381,7 @@ function createTrackingEngine(options = {}) {
         qbankCaptureContext,
         reason,
         pauseTiming: Boolean(flushOptions.pauseTiming),
+        preferAdapterState: Boolean(flushOptions.adapterState),
       });
       if (attempt && attempt.status !== ATTEMPT_STATUS.IN_PROGRESS) {
         stopped = true;
@@ -1278,5 +1615,6 @@ export {
   createTrackingEngineError,
   createTrackingTimingState,
   createTrackingQuestionSnapshot,
+  getTrackingItemList,
   buildTrackingAttemptPatch,
 };

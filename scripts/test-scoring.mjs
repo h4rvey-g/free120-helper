@@ -12,7 +12,6 @@ import {
 } from '../src/scoring/grader.js';
 import {
   buildEndExamCompletionPatch,
-  buildManualFinishAttemptPatch,
   deriveActiveExamProgress,
   deriveEndExamReviewState,
   formatActiveExamProgress,
@@ -139,12 +138,30 @@ assert.equal(scopedCompletionPatch.scoreSummary.questionResults.some((result) =>
 const progress = deriveActiveExamProgress({ attempt, adapterState: createSyntheticAdapterState() });
 assert.deepEqual(progress, { blockNumber: 1, answered: 2, total: 3, source: 'adapter-state' });
 assert.equal(formatActiveExamProgress(progress), '2/3 · Block 1');
+const freshBlockTwoItemIds = Array.from({ length: 40 }, (_item, index) => `fresh-b2-q${index + 1}`);
+const freshBlockTwoProgress = deriveActiveExamProgress({
+  attempt: createSyntheticAttempt({
+    launchedScope: { mode: 'test', block: '2' },
+    questionIds: ['old-b1-q1', 'old-b1-q2', 'old-b1-q3'],
+    questionCount: 40,
+    responses: { 'old-b1-q1': 'A', 'old-b1-q2': 'B', 'old-b1-q3': 'C' },
+  }),
+  adapterState: createSyntheticAdapterState({
+    currentBlock: 2,
+    itemCount: 40,
+    currentItem: { questionId: freshBlockTwoItemIds[0], blockNumber: 2, itemIndex: 1, current: true },
+    itemList: freshBlockTwoItemIds.map((questionId, index) => ({ questionId, blockNumber: 2, itemIndex: index + 1 })),
+    answers: {},
+  }),
+});
+assert.deepEqual(freshBlockTwoProgress, { blockNumber: 2, answered: 0, total: 40, source: 'adapter-state' });
+assert.equal(formatActiveExamProgress(freshBlockTwoProgress), '0/40 · Block 2');
 assert.equal(isAttemptReviewReady({ status: ATTEMPT_STATUS.COMPLETED }), true);
 assert.equal(isAttemptReviewReady({ status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false }), false);
 assert.equal(isEndExamRoute(new URL('https://orientation.nbme.org/webfred/#!/endExam')), true);
 assert.equal(isEndExamRoute(new URL('https://orientation.nbme.org/webfred/#/main')), false);
 assert.deepEqual(deriveEndExamReviewState({
-  attempt: { status: ATTEMPT_STATUS.COMPLETED },
+  attempt: { status: ATTEMPT_STATUS.COMPLETED, questionIds: ['q1'], questionCount: 1 },
   adapterState: createSyntheticAdapterState(),
   location: new URL('https://orientation.nbme.org/webfred/#!/endExam'),
 }), {
@@ -153,31 +170,33 @@ assert.deepEqual(deriveEndExamReviewState({
   routeMatched: true,
   terminalDetected: false,
   reviewReady: true,
+  reviewEvidence: true,
   reason: 'end-exam-route',
 });
+assert.equal(deriveEndExamReviewState({
+  attempt: { status: ATTEMPT_STATUS.COMPLETED, questionIds: [], questionCount: 0 },
+  adapterState: createSyntheticAdapterState(),
+  location: new URL('https://orientation.nbme.org/webfred/#!/endExam'),
+}).enabled, false);
 assert.equal(deriveEndExamReviewState({
   attempt: { status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false },
   adapterState: completeTerminalState,
   location: new URL('https://orientation.nbme.org/webfred/#/main'),
-}).visible, true);
+}).visible, false);
 assert.equal(deriveEndExamReviewState({
   attempt: { status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false },
   adapterState: createSyntheticAdapterState(),
   location: new URL('https://orientation.nbme.org/webfred/#/main'),
 }).visible, false);
 assert.equal(pickLatestEndExamAttempt([
-  { id: 'old', status: ATTEMPT_STATUS.IN_PROGRESS, updatedAt: '2026-05-05T01:00:00.000Z' },
-  { id: 'ready', status: ATTEMPT_STATUS.COMPLETED, updatedAt: '2026-05-05T00:00:00.000Z' },
+  { id: 'latest-empty', status: ATTEMPT_STATUS.IN_PROGRESS, updatedAt: '2026-05-05T01:00:00.000Z' },
+  { id: 'qbank-cache:newer', status: ATTEMPT_STATUS.COMPLETED, questionIds: ['cache-q1'], updatedAt: '2026-05-05T02:00:00.000Z', source: { cacheKind: 'qbank' } },
+  { id: 'ready', status: ATTEMPT_STATUS.COMPLETED, questionIds: ['q1'], updatedAt: '2026-05-05T00:00:00.000Z' },
 ]).id, 'ready');
 const endExamPatch = buildEndExamCompletionPatch(allBlockAttempt, createSyntheticAdapterState({ blockCount: 3 }), { completedAt: '2026-05-05T03:00:00.000Z' });
 assert.equal(endExamPatch.reviewReady, true);
 assert.equal(endExamPatch.status, ATTEMPT_STATUS.COMPLETED);
 assert.equal(endExamPatch.source.completion.reason, 'native-end-exam-route');
 assert.deepEqual(endExamPatch.source.completion.completedBlockNumbers, [1, 2, 3]);
-const manualPatch = buildManualFinishAttemptPatch(attempt, progress, { adapterState: createSyntheticAdapterState(), finishedAt: '2026-05-05T02:00:00.000Z' });
-assert.equal(manualPatch.reviewReady, true);
-assert.equal(manualPatch.status, ATTEMPT_STATUS.COMPLETED);
-assert.equal(manualPatch.source.completion.manual, true);
-assert.equal(manualPatch.source.manualFinish.answered, 2);
 
 console.log('scoring and active-exam tests passed');

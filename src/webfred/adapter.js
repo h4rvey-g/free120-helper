@@ -154,8 +154,10 @@ function buildQuestionIdentity(parts = {}) {
   const fallbackItemId = normalizeIdentifierPart(parts.itemId || parts.questionId || parts.id);
   const blockNumber = coercePositiveInteger(parts.blockNumber || parts.block || parts.blockIndex, 0);
   const itemIndex = coercePositiveInteger(parts.itemIndex || parts.index || parts.number || parts.position, 0);
-  const primaryParts = [examProgram, examName || examSection, medleyId, componentId].filter(Boolean);
-  const fallbackParts = [examProgram, examName || examSection, fallbackItemId].filter(Boolean);
+  const blockPart = blockNumber ? `Block-${blockNumber}` : '';
+  const identityPrefixParts = [examProgram, examName, ...uniqueNormalizedStrings([examSection, blockPart])].filter(Boolean);
+  const primaryParts = [...identityPrefixParts, medleyId, componentId].filter(Boolean);
+  const fallbackParts = [...identityPrefixParts, fallbackItemId].filter(Boolean);
   const hasPrimaryIdentity = Boolean(medleyId && componentId);
   const hasFallbackIdentity = Boolean(fallbackItemId && fallbackParts.length >= 2);
   const questionId = hasPrimaryIdentity
@@ -1168,14 +1170,85 @@ function addAnswerMapping(answers, questionId, answerId) {
   }
 }
 
+function getDenseNumericKeyIndexBase(keys, itemCount) {
+  const count = coercePositiveInteger(itemCount, 0);
+  const list = Array.isArray(keys) ? keys : [];
+  if (count <= 1 || list.length !== count) {
+    return null;
+  }
+  const numericKeys = list.map((key) => {
+    const text = normalizeString(key, '');
+    return /^\d+$/.test(text) ? Number(text) : Number.NaN;
+  });
+  if (numericKeys.some((value) => !Number.isInteger(value))) {
+    return null;
+  }
+  const sorted = numericKeys.slice().sort((left, right) => left - right);
+  const oneBased = sorted.every((value, index) => value === index + 1);
+  if (oneBased) {
+    return 1;
+  }
+  const zeroBased = sorted.every((value, index) => value === index);
+  return zeroBased ? 0 : null;
+}
+
+function getItemByDenseNumericKey(key, itemList, indexBase) {
+  if (indexBase !== 0 && indexBase !== 1) {
+    return null;
+  }
+  const index = Number(normalizeString(key, '')) - indexBase;
+  return Number.isInteger(index) && index >= 0 && index < itemList.length ? itemList[index] : null;
+}
+
+function getSparseNumericKeyIndexBase(keys, itemCount, rawMap, currentItem = null) {
+  const count = coercePositiveInteger(itemCount, 0);
+  const list = Array.isArray(keys) ? keys : [];
+  if (count <= 1 || !list.length || list.length > count) {
+    return null;
+  }
+  const numericKeys = list.map((key) => {
+    const text = normalizeString(key, '');
+    return /^\d+$/.test(text) ? Number(text) : Number.NaN;
+  });
+  if (numericKeys.some((value) => !Number.isInteger(value))) {
+    return null;
+  }
+  const candidates = [];
+  if (numericKeys.every((value) => value >= 1 && value <= count)) {
+    candidates.push(1);
+  }
+  if (numericKeys.every((value) => value >= 0 && value < count)) {
+    candidates.push(0);
+  }
+  const currentIndex = coercePositiveInteger(currentItem && currentItem.itemIndex, 0);
+  const currentAnswerId = normalizeString(currentItem && currentItem.selectedAnswerId, '');
+  if (!currentIndex || !currentAnswerId) {
+    return null;
+  }
+  return candidates.find((indexBase) => {
+    const key = String(currentIndex + indexBase - 1);
+    if (!Object.prototype.hasOwnProperty.call(rawMap, key)) {
+      return false;
+    }
+    return normalizeString(rawMap[key], '') === currentAnswerId;
+  }) ?? null;
+}
+
 function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = null) {
   const answers = {};
+  const rawAnswerList = Array.isArray(rawAnswers) ? rawAnswers : [];
+  const allowArrayIndexFallback = rawAnswerList.length > 0 && rawAnswerList.length === itemList.length;
+  const itemsByQuestionId = new Map();
   const itemsByCandidateId = new Map();
   itemList.forEach((item) => {
-    [item.questionId, item.componentId, item.medleyId, String(item.itemIndex)].forEach((key) => {
+    const questionId = normalizeString(item && item.questionId, '');
+    if (questionId) {
+      itemsByQuestionId.set(questionId, questionId);
+    }
+    [item && item.questionId, item && item.componentId].forEach((key) => {
       const normalized = normalizeString(key, '');
-      if (normalized) {
-        itemsByCandidateId.set(normalized, item.questionId);
+      if (normalized && questionId) {
+        itemsByCandidateId.set(normalized, questionId);
       }
     });
   });
@@ -1190,14 +1263,20 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
   }
 
   if (!Array.isArray(rawAnswers) && isReadableObject(rawAnswers)) {
-    safeOwnKeys(rawAnswers).forEach((key) => {
+    const rawAnswerKeys = safeOwnKeys(rawAnswers);
+    const denseNumericKeyIndexBase = getDenseNumericKeyIndexBase(rawAnswerKeys, itemList.length);
+    const sparseNumericKeyIndexBase = denseNumericKeyIndexBase === null
+      ? getSparseNumericKeyIndexBase(rawAnswerKeys, itemList.length, rawAnswers, currentItem)
+      : null;
+    rawAnswerKeys.forEach((key) => {
       let value;
       try {
         value = rawAnswers[key];
       } catch (_error) {
         value = null;
       }
-      const mappedQuestionId = itemsByCandidateId.get(key) || key;
+      const numericItem = getItemByDenseNumericKey(key, itemList, denseNumericKeyIndexBase) || getItemByDenseNumericKey(key, itemList, sparseNumericKeyIndexBase);
+      const mappedQuestionId = itemsByQuestionId.get(key) || itemsByCandidateId.get(key) || (numericItem && numericItem.questionId) || (itemList.length <= 1 ? key : '');
       if (isReadableObject(value)) {
         const answerId = firstNonEmpty([
           findFirstSemanticValue([value], ['selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'value'], { maxDepth: 2 }),
@@ -1214,7 +1293,7 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
 
   valueToArray(rawAnswers).forEach((entry, index) => {
     if (!isReadableObject(entry)) {
-      const item = itemList[index];
+      const item = (itemList.length <= 1 || allowArrayIndexFallback) ? itemList[index] : null;
       if (item) {
         addAnswerMapping(answers, item.questionId, entry);
       }
@@ -1223,9 +1302,9 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
 
     const rawQuestionId = firstNonEmpty([
       findFirstSemanticValue([entry], ['questionId', 'itemId', 'id', 'componentId', 'componentID', 'itemComponentId'], { maxDepth: 1 }),
-      String(index + 1),
     ]);
-    const mappedQuestionId = itemsByCandidateId.get(rawQuestionId) || rawQuestionId;
+    const indexFallbackItem = allowArrayIndexFallback && !rawQuestionId ? itemList[index] : null;
+    const mappedQuestionId = itemsByQuestionId.get(rawQuestionId) || itemsByCandidateId.get(rawQuestionId) || (indexFallbackItem && indexFallbackItem.questionId) || (itemList.length <= 1 ? rawQuestionId : '');
     const answerId = firstNonEmpty([
       findFirstSemanticValue([entry], ['selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'value'], { maxDepth: 2 }),
       isReadableObject(readCandidateProperty(entry, ['answer', 'response', 'selectedAnswer']))
@@ -1241,12 +1320,19 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
 
 function normalizeMarksFromAngular(rawMarks, itemList = [], currentItem = null) {
   const marks = {};
+  const rawMarkList = Array.isArray(rawMarks) ? rawMarks : [];
+  const allowArrayIndexFallback = rawMarkList.length > 0 && rawMarkList.length === itemList.length;
+  const itemsByQuestionId = new Map();
   const itemsByCandidateId = new Map();
   itemList.forEach((item) => {
-    [item.questionId, item.componentId, item.medleyId, String(item.itemIndex)].forEach((key) => {
+    const questionId = normalizeString(item && item.questionId, '');
+    if (questionId) {
+      itemsByQuestionId.set(questionId, questionId);
+    }
+    [item && item.questionId, item && item.componentId].forEach((key) => {
       const normalized = normalizeString(key, '');
-      if (normalized) {
-        itemsByCandidateId.set(normalized, item.questionId);
+      if (normalized && questionId) {
+        itemsByCandidateId.set(normalized, questionId);
       }
     });
     if (item.marked) {
@@ -1267,15 +1353,15 @@ function normalizeMarksFromAngular(rawMarks, itemList = [], currentItem = null) 
       if (isReadableObject(entry)) {
         const rawQuestionId = firstNonEmpty([
           findFirstSemanticValue([entry], ['questionId', 'itemId', 'id', 'componentId', 'componentID', 'itemComponentId'], { maxDepth: 1 }),
-          String(index + 1),
         ]);
-        const mappedQuestionId = itemsByCandidateId.get(rawQuestionId) || rawQuestionId;
+        const indexFallbackItem = allowArrayIndexFallback && !rawQuestionId ? itemList[index] : null;
+        const mappedQuestionId = itemsByQuestionId.get(rawQuestionId) || itemsByCandidateId.get(rawQuestionId) || (indexFallbackItem && indexFallbackItem.questionId) || (itemList.length <= 1 ? rawQuestionId : '');
         const marked = normalizeMaybeBoolean(findFirstSemanticValue([entry], ['marked', 'isMarked', 'flagged', 'isFlagged', 'value'], { maxDepth: 2 }));
         if (mappedQuestionId && marked) {
           marks[mappedQuestionId] = true;
         }
       } else if (entry) {
-        const item = itemList[index];
+        const item = (itemList.length <= 1 || allowArrayIndexFallback) ? itemList[index] : null;
         if (item) {
           marks[item.questionId] = true;
         }
@@ -1285,7 +1371,12 @@ function normalizeMarksFromAngular(rawMarks, itemList = [], currentItem = null) 
   }
 
   if (isReadableObject(rawMarks)) {
-    safeOwnKeys(rawMarks).forEach((key) => {
+    const rawMarkKeys = safeOwnKeys(rawMarks);
+    const denseNumericKeyIndexBase = getDenseNumericKeyIndexBase(rawMarkKeys, itemList.length);
+    const sparseNumericKeyIndexBase = denseNumericKeyIndexBase === null
+      ? getSparseNumericKeyIndexBase(rawMarkKeys, itemList.length, rawMarks, currentItem)
+      : null;
+    rawMarkKeys.forEach((key) => {
       let value;
       try {
         value = rawMarks[key];
@@ -1293,7 +1384,8 @@ function normalizeMarksFromAngular(rawMarks, itemList = [], currentItem = null) 
         value = null;
       }
       const marked = normalizeMaybeBoolean(value);
-      const mappedQuestionId = itemsByCandidateId.get(key) || key;
+      const numericItem = getItemByDenseNumericKey(key, itemList, denseNumericKeyIndexBase) || getItemByDenseNumericKey(key, itemList, sparseNumericKeyIndexBase);
+      const mappedQuestionId = itemsByQuestionId.get(key) || itemsByCandidateId.get(key) || (numericItem && numericItem.questionId) || (itemList.length <= 1 ? key : '');
       if (mappedQuestionId && marked) {
         marks[mappedQuestionId] = true;
       }
@@ -1531,11 +1623,14 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
   }
 
   const rawAnswers = findFirstSemanticValue(roots, ['answers', 'responses', 'itemResponses', 'selectedAnswers', 'answerMap'], { maxDepth: 3 });
-  const answers = normalizeAnswersFromAngular(rawAnswers, itemList, currentItem);
+  const scopedRawAnswers = Array.isArray(rawAnswers) ? selectAngularItemsForCurrentBlock(rawAnswers, currentBlock, domState) : rawAnswers;
+  const answers = normalizeAnswersFromAngular(scopedRawAnswers, itemList, currentItem);
   const rawMarks = findFirstSemanticValue(roots, ['marks', 'markedItems', 'flaggedItems', 'flags', 'markMap'], { maxDepth: 3 });
-  const marks = normalizeMarksFromAngular(rawMarks, itemList, currentItem);
+  const scopedRawMarks = Array.isArray(rawMarks) ? selectAngularItemsForCurrentBlock(rawMarks, currentBlock, domState) : rawMarks;
+  const marks = normalizeMarksFromAngular(scopedRawMarks, itemList, currentItem);
   const rawContent = findFirstSemanticValue(roots, ['currentContent', 'content', 'itemContent', 'currentItemContent', 'contents'], { maxDepth: 3 });
-  const angularContent = normalizeCurrentContentFromAngular(rawContent, currentItem);
+  const scopedRawContent = Array.isArray(rawContent) ? selectAngularItemsForCurrentBlock(rawContent, currentBlock, domState) : rawContent;
+  const angularContent = normalizeCurrentContentFromAngular(scopedRawContent, currentItem);
   const currentContent = angularContent || (domState && domState.currentContent) || null;
   const rawBlocks = findFirstSemanticValue(roots, ['blocks', 'blockList', 'sections', 'blockMetadata'], { maxDepth: 3 });
   const shouldTrustDomBlock = Boolean((domState && domState.currentBlock) || itemList.length || (domState && domState.itemCount));

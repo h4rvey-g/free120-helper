@@ -147,8 +147,42 @@ async function main() {
       const startResult = await helper.tracking.start({ adapterState: state });
       await helper.tracking.flush('live-validation');
       const activeAttempt = helper.tracking.getAttempt() || (startResult && startResult.attempt) || null;
+      if (activeAttempt) {
+        const ownSnapshots = await helper.storage.listQuestionSnapshots(activeAttempt.id);
+        const reviewHtml = helper.review.buildReviewHtml(activeAttempt, ownSnapshots);
+        window.__free120LiveReviewResult = await new Promise((resolve) => {
+          const frame = document.createElement('iframe');
+          frame.style.width = '960px';
+          frame.style.height = '720px';
+          const readReview = () => {
+            const doc = frame.contentDocument;
+            const selectedInput = doc && doc.querySelector('ol.options input:checked');
+            return {
+              navItems: doc ? doc.querySelectorAll('ol#leftnav li').length : 0,
+              stemVisible: Boolean(doc && doc.body && doc.body.innerText.includes('Synthetic live-validation stem')),
+              selectedValue: selectedInput ? selectedInput.getAttribute('value') : '',
+              unavailable: Boolean(doc && doc.body && doc.body.innerText.includes('Stored rendered item snapshot unavailable')),
+            };
+          };
+          frame.onload = () => {
+            const started = Date.now();
+            const poll = () => {
+              const result = readReview();
+              if (result.navItems >= 1 || Date.now() - started > 3000) {
+                resolve(result);
+                return;
+              }
+              setTimeout(poll, 50);
+            };
+            poll();
+          };
+          document.body.appendChild(frame);
+          frame.srcdoc = reviewHtml;
+        });
+      }
       const attempts = await helper.storage.listAttempts({ includeInProgress: true });
       const keySummary = activeAttempt && activeAttempt.answerKeyCapture ? activeAttempt.answerKeyCapture : {};
+      const activeSnapshots = activeAttempt ? await helper.storage.listQuestionSnapshots(activeAttempt.id) : [];
       const exportEnvelope = await helper.storage.exportHistoryOnly();
       const exportedJson = JSON.stringify(exportEnvelope);
       const importResult = await helper.storage.importJson(exportEnvelope, { conflictMode: 'skip' });
@@ -173,6 +207,13 @@ async function main() {
         trackingStatus: helper.tracking.getStatus(),
         attempts: attempts.length,
         activeAttemptId: activeAttempt && activeAttempt.id,
+        activeQuestionCount: activeAttempt && activeAttempt.questionIds && activeAttempt.questionIds.length,
+        activeResponseValues: activeAttempt ? Object.values(activeAttempt.responses || {}) : [],
+        activeSnapshotCount: activeSnapshots.length,
+        activeSnapshotSelected: activeSnapshots[0] && activeSnapshots[0].selectedAnswerId,
+        activeSnapshotRendered: Boolean(activeSnapshots[0] && activeSnapshots[0].renderedHtml),
+        activeSnapshotSource: activeSnapshots[0] && activeSnapshots[0].metadata && activeSnapshots[0].metadata.questionContentSource,
+        reviewResult: window.__free120LiveReviewResult || null,
         keyStatus: keySummary.status,
         keyKnown: keySummary.knownCount,
         exportSnapshots: exportEnvelope.questionSnapshots.length,
@@ -191,6 +232,15 @@ async function main() {
   assert(webfredValidation.currentItem && webfredValidation.currentItem.questionId, 'current item missing');
   assert(webfredValidation.choices >= 2, 'MCQ choices not parsed');
   assert(webfredValidation.attempts >= 1, 'tracking attempt not stored');
+  assert(webfredValidation.activeQuestionCount >= 1, 'tracked question ids missing');
+  assert(webfredValidation.activeResponseValues.includes('A'), 'selected answer not recorded');
+  assert(webfredValidation.activeSnapshotCount >= 1, 'tracking snapshot not stored');
+  assert(webfredValidation.activeSnapshotSelected === 'A', 'tracking snapshot selected answer mismatch');
+  assert(webfredValidation.activeSnapshotRendered, 'tracking snapshot rendered question missing');
+  assert(webfredValidation.reviewResult && webfredValidation.reviewResult.navItems >= 1, 'review mode has no questions');
+  assert(webfredValidation.reviewResult.stemVisible, 'review mode question stem missing');
+  assert(webfredValidation.reviewResult.selectedValue === 'A', 'review mode selected option missing');
+  assert(webfredValidation.reviewResult.unavailable === false, 'review mode fell back to unavailable item');
   assert(webfredValidation.keyStatus === 'complete', 'synthetic answer key capture incomplete');
   assert(webfredValidation.keyKnown >= 1, 'synthetic key count mismatch');
   assert(webfredValidation.exportSnapshots === 0 && webfredValidation.exportContentFree, 'history-only export leaked question content');

@@ -43,9 +43,14 @@ const capture = resolveQBankCaptureForItems(context, {
 assert.deepEqual(capture.correctAnswers, { 'live-q1': 'A' });
 assert.equal(capture.summary.source, 'qbank-cache');
 assert.equal(capture.source.matchSourcesByQuestionId['live-q1'], 'component-medley');
+const blockTwoCapture = resolveQBankCaptureForItems(context, {
+  itemList: [Object.freeze({ questionId: 'live-b2-q1', componentId: 'COMP1', medleyId: 'MED1', blockNumber: 2, itemIndex: 1 })],
+  expectedCount: 1,
+});
+assert.deepEqual(blockTwoCapture.correctAnswers, {}, 'qbank component matches stay block-scoped');
 const qbankSnapshots = await loadQBankSnapshotsForAttempt(qbankStorage, {
   questionIds: ['live-q1'],
-  source: Object.freeze({ itemMetadataByQuestionId: Object.freeze({ 'live-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1' }) }) }),
+  source: Object.freeze({ itemMetadataByQuestionId: Object.freeze({ 'live-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1', blockNumber: 1, itemIndex: 1 }) }) }),
 });
 assert.equal(qbankSnapshots.length, 1);
 assert.equal(qbankSnapshots[0].questionId, 'live-q1');

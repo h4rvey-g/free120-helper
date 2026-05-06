@@ -508,7 +508,7 @@ function hasStoredReviewEvidence(question) {
   return Boolean(candidate.fromAttemptQuestionIds || candidate.fromResponses || candidate.fromCorrectAnswers || candidate.fromSnapshot);
 }
 
-function getDominantReviewSourceBlockNumber(questions) {
+function getReviewSourceBlockCounts(questions) {
   const counts = new Map();
   arrayOrEmpty(questions).forEach((question) => {
     const blockNumber = coercePositiveInteger(question && question._sourceBlockNumber, 0);
@@ -516,6 +516,11 @@ function getDominantReviewSourceBlockNumber(questions) {
       counts.set(blockNumber, (counts.get(blockNumber) || 0) + 1);
     }
   });
+  return counts;
+}
+
+function getDominantReviewSourceBlockNumber(questions) {
+  const counts = getReviewSourceBlockCounts(questions);
   if (!counts.size) {
     return 0;
   }
@@ -525,6 +530,24 @@ function getDominantReviewSourceBlockNumber(questions) {
     }
     return left[0] - right[0];
   })[0][0];
+}
+
+function getExplicitReviewBlockNumber(attempt) {
+  const scope = getLaunchedScope(attempt);
+  return coercePositiveInteger([
+    ...parseBlockNumbers(scope.block),
+    ...parseBlockNumbers(scope.selectedBlock),
+    ...parseBlockNumbers(scope.launchedBlock),
+  ][0], 0);
+}
+
+function getReviewProgressBlockQuestionIds(attempt) {
+  const blockNumber = getExplicitReviewBlockNumber(attempt);
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  const progress = plainObjectOrEmpty(source.progress);
+  const byBlock = plainObjectOrEmpty(progress.byBlock);
+  const block = plainObjectOrEmpty(byBlock[String(blockNumber)] || byBlock[blockNumber]);
+  return blockNumber ? uniqueStrings(arrayOrEmpty(block.questionIds)) : [];
 }
 
 function selectSingleBlockReviewCandidates(attempt, questions) {
@@ -538,9 +561,14 @@ function selectSingleBlockReviewCandidates(attempt, questions) {
   if (sourceBlocks.length <= 1) {
     return list;
   }
+  const explicitBlockNumber = getExplicitReviewBlockNumber(attempt);
+  const counts = getReviewSourceBlockCounts(list);
   const dominantBlockNumber = getDominantReviewSourceBlockNumber(list);
+  const dominantCount = coercePositiveInteger(counts.get(dominantBlockNumber), 0);
+  const explicitCount = coercePositiveInteger(counts.get(explicitBlockNumber), 0);
+  const targetBlockNumber = explicitBlockNumber && explicitCount >= dominantCount ? explicitBlockNumber : dominantBlockNumber;
   const filtered = list.filter((question) => !coercePositiveInteger(question && question._sourceBlockNumber, 0)
-    || coercePositiveInteger(question && question._sourceBlockNumber, 0) === dominantBlockNumber);
+    || coercePositiveInteger(question && question._sourceBlockNumber, 0) === targetBlockNumber);
   return filtered.length ? filtered : list;
 }
 
@@ -567,7 +595,13 @@ function selectValidReviewQuestionIds(sourceAttempt, snapshots, scoreSummary) {
   const rawQuestions = buildReviewQuestions(sourceAttempt, snapshots, scoreSummary, null, candidateByQuestionId);
   const anchoredQuestions = rawQuestions.filter(hasStoredReviewEvidence);
   const reviewCandidates = anchoredQuestions.length ? anchoredQuestions : rawQuestions;
-  return uniqueStrings(limitReviewQuestionsPerBlock(dedupeReviewPositions(selectSingleBlockReviewCandidates(sourceAttempt, reviewCandidates))).map((question) => question.questionId));
+  const progressQuestionIds = getReviewProgressBlockQuestionIds(sourceAttempt);
+  const progressAllowed = new Set(progressQuestionIds);
+  const progressScopedCandidates = progressQuestionIds.length
+    ? reviewCandidates.filter((question) => progressAllowed.has(normalizeString(question && question.questionId, '')))
+    : [];
+  const scopedCandidates = progressScopedCandidates.length ? progressScopedCandidates : reviewCandidates;
+  return uniqueStrings(limitReviewQuestionsPerBlock(dedupeReviewPositions(selectSingleBlockReviewCandidates(sourceAttempt, scopedCandidates))).map((question) => question.questionId));
 }
 
 function filterRecordToQuestionIds(record, questionIds) {

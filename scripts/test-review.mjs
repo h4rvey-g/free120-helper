@@ -100,6 +100,7 @@ assert.equal(historyRow.status, 'Completed');
 assert.equal(historyRow.reviewReady, true);
 assert.equal(canOpenReviewFromHistory(historyAttempt), true);
 assert.equal(canOpenReviewFromHistory({ ...historyAttempt, status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false }), false);
+assert.equal(canOpenReviewFromHistory({ id: 'empty-completed', status: ATTEMPT_STATUS.COMPLETED, questionIds: [], questionCount: 0 }), false);
 assert.match(IMPORT_REPLACE_WARNING, /overwrites local attempts/);
 
 assert.equal(isQBankCacheAttempt({ id: 'qbank-cache:USMLE:STPF1:STPF1C0137' }), true);
@@ -109,7 +110,7 @@ const fallbackAttempt = Object.freeze({
   questionIds: Object.freeze(['real-q1']),
   source: Object.freeze({
     itemMetadataByQuestionId: Object.freeze({
-      'real-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1' }),
+      'real-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1', blockNumber: 1, itemIndex: 1 }),
     }),
   }),
 });
@@ -123,7 +124,9 @@ const fallbackSnapshots = await loadQBankFallbackSnapshots({
       attemptId: 'qbank-cache:USMLE:STPF1:STPF1C0137',
       questionId: 'qbank-q1',
       renderedHtml: '<div id="item1"><ol class="options"></ol></div>',
-      metadata: Object.freeze({ componentId: 'COMP1', medleyId: 'MED1' }),
+      blockNumber: 1,
+      itemIndex: 1,
+      metadata: Object.freeze({ componentId: 'COMP1', medleyId: 'MED1', blockNumber: 1, itemIndex: 1 }),
     })];
   },
 }, fallbackAttempt, []);
@@ -246,5 +249,32 @@ assert.equal(reportedModel.questions.length, 40, 'single-block review caps leake
 assert.deepEqual(reportedModel.scoreSummary.perBlock.map((block) => block.blockNumber), [1]);
 assert.equal(reportedModel.scoreSummary.total, 40);
 assert.equal(reportedModel.questions.some((question) => question.blockNumber !== 1), false);
+
+const reviewBlockOneIds = Array.from({ length: 40 }, (_item, index) => `review-b1-q${index + 1}`);
+const reviewBlockTwoIds = Array.from({ length: 40 }, (_item, index) => `review-b2-q${index + 1}`);
+const scopedReviewModel = buildReviewModel(Object.freeze({
+  id: 'attempt-review-progress-scoped-block-two',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: 'test', block: '2' }),
+  questionIds: Object.freeze([...reviewBlockOneIds, ...reviewBlockTwoIds]),
+  questionCount: 80,
+  responses: Object.freeze(Object.fromEntries(reviewBlockOneIds.slice(0, 3).map((questionId) => [questionId, 'A']))),
+  correctAnswers: Object.freeze(Object.fromEntries([...reviewBlockOneIds, ...reviewBlockTwoIds].map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    progress: Object.freeze({
+      byBlock: Object.freeze({
+        2: Object.freeze({ blockNumber: 2, answered: 0, total: 40, questionIds: Object.freeze(reviewBlockTwoIds), answeredQuestionIds: Object.freeze([]) }),
+      }),
+    }),
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries([
+      ...reviewBlockOneIds.map((questionId, index) => [questionId, Object.freeze({ questionId, blockNumber: 1, itemIndex: index + 1 })]),
+      ...reviewBlockTwoIds.map((questionId, index) => [questionId, Object.freeze({ questionId, blockNumber: 2, itemIndex: index + 1 })]),
+    ])),
+  }),
+}), []);
+assert.equal(scopedReviewModel.questions.length, 40, 'review mode uses active block progress question ids');
+assert.deepEqual(scopedReviewModel.questions.map((question) => question.questionId), reviewBlockTwoIds);
+assert.deepEqual(scopedReviewModel.scoreSummary.perBlock.map((block) => block.blockNumber), [2]);
+assert.equal(scopedReviewModel.scoreSummary.answered, 0);
 
 console.log('review and history tests passed');

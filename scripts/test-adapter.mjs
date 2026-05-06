@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAPTURE_SOURCE } from '../src/core/constants.js';
 import { createAnswerKeyCaptureController, createAnswerKeyCaptureResult, createFailedAnswerKeyCaptureResult } from '../src/answer-keys/controller.js';
-import { createTrackingQuestionSnapshot, buildTrackingAttemptPatch } from '../src/tracking/engine.js';
+import { createTrackingQuestionSnapshot, getTrackingItemList, buildTrackingAttemptPatch } from '../src/tracking/engine.js';
 import {
   buildQuestionIdentity,
   coercePositiveInteger,
@@ -68,8 +68,10 @@ assert.equal(safeAttribute(item, 'id'), 'item-q1');
 assert.equal(safeDatasetValue(item, 'componentId'), 'component-q1');
 
 const identity = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', medleyId: 'm1', componentId: 'c1', blockNumber: 1, itemIndex: 2 });
-assert.equal(identity.questionId, 'webfred:Step-1:Free-120:m1:c1');
+assert.equal(identity.questionId, 'webfred:Step-1:Free-120:Block-1:m1:c1');
 assert.equal(identity.identitySource, 'component-medley');
+const crossBlockIdentity = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', medleyId: 'm1', componentId: 'c1', blockNumber: 2, itemIndex: 2 });
+assert.notEqual(crossBlockIdentity.questionId, identity.questionId, 'question identity includes block scope');
 
 const choices = extractChoicesFromDom(item);
 assert.equal(choices.length, 2);
@@ -154,6 +156,126 @@ assert.equal(allBlockState.itemList[0].itemIndex, 1);
 assert.equal(allBlockState.itemList[39].componentId, 'component-q80');
 assert.equal(allBlockState.currentItem.itemIndex, 1);
 
+const answerArrayItems = [
+  Object.freeze({ questionId: 'array-b2-q1', componentId: 'array-component-1', medleyId: 'array-medley', blockNumber: 2, itemIndex: 1 }),
+  Object.freeze({ questionId: 'array-b2-q2', componentId: 'array-component-2', medleyId: 'array-medley', blockNumber: 2, itemIndex: 2 }),
+  Object.freeze({ questionId: 'array-b2-q3', componentId: 'array-component-3', medleyId: 'array-medley', blockNumber: 2, itemIndex: 3 }),
+];
+const answerArrayNavItems = answerArrayItems.map((_entry, index) => el(
+  'li',
+  index === 0 ? { class: 'currentitem', 'aria-current': 'true' } : {},
+  [el('span', { class: 'index' }, [String(index + 1)])]
+));
+const answerArrayBody = el('main', {}, [
+  el('nav', {}, [el('ol', { id: 'leftnav' }, answerArrayNavItems)]),
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'medley-answer-array', 'data-medley-id': 'array-medley' }, [
+    el('div', { id: 'answer-array-q1', 'data-component-id': 'array-component-1', 'data-item-index': '1' }, [
+      el('div', { class: 'NBExposition' }, ['Array answer stem']),
+      el('div', { id: 'answer-array-q1_div', class: 'NBOptionListComp answerbox' }, [choiceRows]),
+    ]),
+  ])])]),
+  el('div', {}, ['Block 2 of 2']),
+]);
+const answerArrayDocument = createFakeDocument(answerArrayBody, { title: 'Synthetic Step 1 Free 120' });
+const answerArrayWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%202');
+answerArrayWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          currentBlock: 2,
+          blockCount: 2,
+          itemCount: 3,
+          itemList: answerArrayItems,
+          currentItem: answerArrayItems[0],
+          answers: ['A', '', 'C'],
+          marks: [false, true, false],
+        },
+      }),
+    }),
+  }),
+};
+const answerArrayState = createWebfredSiteAdapter({ window: answerArrayWindow, document: answerArrayDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.deepEqual(answerArrayState.answers, {
+  [answerArrayState.itemList[0].questionId]: 'A',
+  [answerArrayState.itemList[2].questionId]: 'C',
+}, 'same-length current-block answer arrays map by item index');
+assert.deepEqual(answerArrayState.marks, { [answerArrayState.itemList[1].questionId]: true }, 'same-length current-block mark arrays map by item index');
+
+const answerObjectWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%202');
+answerObjectWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          currentBlock: 2,
+          blockCount: 2,
+          itemCount: 3,
+          itemList: answerArrayItems,
+          currentItem: answerArrayItems[0],
+          answers: { 1: 'A', 2: '', 3: 'C' },
+          marks: { 1: false, 2: true, 3: false },
+        },
+      }),
+    }),
+  }),
+};
+const answerObjectState = createWebfredSiteAdapter({ window: answerObjectWindow, document: answerArrayDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.deepEqual(answerObjectState.answers, {
+  [answerObjectState.itemList[0].questionId]: 'A',
+  [answerObjectState.itemList[2].questionId]: 'C',
+}, 'dense numeric current-block answer maps map by item index');
+assert.deepEqual(answerObjectState.marks, { [answerObjectState.itemList[1].questionId]: true }, 'dense numeric current-block mark maps map by item index');
+
+const staleAnswerObjectWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%202');
+staleAnswerObjectWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          currentBlock: 2,
+          blockCount: 2,
+          itemCount: 3,
+          itemList: answerArrayItems,
+          currentItem: answerArrayItems[0],
+          answers: { 41: 'A', 42: 'B', 43: 'C' },
+          marks: { 41: true },
+        },
+      }),
+    }),
+  }),
+};
+const staleAnswerObjectState = createWebfredSiteAdapter({ window: staleAnswerObjectWindow, document: answerArrayDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.deepEqual(staleAnswerObjectState.answers, {}, 'non-current numeric answer maps do not import stale cross-block answers');
+assert.deepEqual(staleAnswerObjectState.marks, {}, 'non-current numeric mark maps do not import stale cross-block marks');
+
+const sparseAnswerObjectWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%202');
+sparseAnswerObjectWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          currentBlock: 2,
+          blockCount: 2,
+          itemCount: 3,
+          itemList: answerArrayItems,
+          currentItem: { ...answerArrayItems[2], selectedAnswerId: 'C' },
+          answers: { 1: 'A', 3: 'C' },
+        },
+      }),
+    }),
+  }),
+};
+const sparseAnswerObjectState = createWebfredSiteAdapter({ window: sparseAnswerObjectWindow, document: answerArrayDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.deepEqual(sparseAnswerObjectState.answers, {
+  [sparseAnswerObjectState.itemList[0].questionId]: 'A',
+  [sparseAnswerObjectState.itemList[2].questionId]: 'C',
+}, 'sparse numeric current-block answer maps map by verified current item index');
+
 const adapterState = createSyntheticAdapterState();
 assert.deepEqual(snapshotForAttemptPosition(adapterState), {
   questionId: 'q1',
@@ -226,6 +348,19 @@ const refreshingCaptureController = createAnswerKeyCaptureController({
 const refreshedCaptureResult = await refreshingCaptureController.captureOnce({ adapterState: staleCaptureState, expectedCount: 1 });
 assert.equal(refreshedCaptureResult.summary.status, ANSWER_KEY_CAPTURE_STATUS.COMPLETE);
 assert.equal(refreshingCaptureController.getLastError(), null);
+
+const dedupedTrackingItems = getTrackingItemList(createSyntheticAdapterState({
+  currentBlock: 1,
+  itemCount: 1,
+  currentItem: Object.freeze({ questionId: 'trusted-q1', componentId: 'component-q1', medleyId: 'medley-1', blockNumber: 1, itemIndex: 1, selectedAnswerId: 'B', current: true }),
+  itemList: Object.freeze([
+    Object.freeze({ questionId: 'webfred:untrusted:legacy', blockNumber: 1, itemIndex: 1, current: true }),
+  ]),
+  answers: Object.freeze({ 'trusted-q1': 'B' }),
+}));
+assert.equal(dedupedTrackingItems.length, 1, 'trusted current item replaces same-position untrusted fallback item');
+assert.equal(dedupedTrackingItems[0].questionId, 'trusted-q1');
+assert.equal(dedupedTrackingItems[0].selectedAnswerId, 'B');
 
 const keyPageNav = el('nav', {}, [el('ol', { id: 'leftnav' }, [
   el('li', {}, [el('span', { class: 'index' }, ['1'])]),
@@ -317,6 +452,22 @@ assert.equal(trackingSnapshot.annotations.strikeouts.length, 1);
 assert.equal(trackingSnapshot.timingMs, 1234);
 assert.deepEqual(trackingSnapshot.resourceUrls, ['https://example.test/synthetic.png']);
 
+const liveFallbackTrackingSnapshot = createTrackingQuestionSnapshot({
+  attemptId: attempt.id,
+  attempt,
+  adapterState,
+  item: adapterState.currentItem,
+  itemList: adapterState.itemList,
+  timingByQuestionId: { q1: { totalMs: 1234 } },
+  qbankCaptureResult: null,
+  root: item,
+  document: fakeDocument,
+});
+assert.match(liveFallbackTrackingSnapshot.renderedHtml, /Synthetic stem/, 'live DOM snapshot keeps question content when qbank cache is unavailable');
+assert.equal(liveFallbackTrackingSnapshot.choices.length, 3, 'live snapshot choices keep review option rows without qbank cache');
+assert.equal(liveFallbackTrackingSnapshot.selectedAnswerId, 'A', 'live snapshot records selected answer without qbank cache');
+assert.equal(liveFallbackTrackingSnapshot.metadata.questionContentSource, 'dom-current-item');
+
 const patch = buildTrackingAttemptPatch(
   attempt,
   adapterState,
@@ -336,5 +487,127 @@ assert.equal(patch.markedQuestionIds[0], 'q2');
 assert.equal(patch.source.progress.overall.answered, 2);
 assert.equal(patch.source.itemMetadataByQuestionId.q1.componentId, 'component-q1');
 assert.equal(patch.answerTimeline.length, 1);
+
+const scopedBlockOneItems = Array.from({ length: 40 }, (_item, index) => {
+  const itemIdentity = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', medleyId: 'shared-medley', componentId: `component-${index + 1}`, blockNumber: 1, itemIndex: index + 1 });
+  return Object.freeze({ questionId: itemIdentity.questionId, componentId: itemIdentity.componentId, medleyId: itemIdentity.medleyId, blockNumber: 1, itemIndex: index + 1 });
+});
+const scopedBlockTwoItems = Array.from({ length: 40 }, (_item, index) => {
+  const itemIdentity = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', medleyId: 'shared-medley', componentId: `component-${index + 1}`, blockNumber: 2, itemIndex: index + 1 });
+  return Object.freeze({ questionId: itemIdentity.questionId, componentId: itemIdentity.componentId, medleyId: itemIdentity.medleyId, blockNumber: 2, itemIndex: index + 1 });
+});
+const scopedPatch = buildTrackingAttemptPatch(
+  createSyntheticAttempt({
+    id: 'attempt-scoped-blocks',
+    questionIds: scopedBlockOneItems.map((entry) => entry.questionId),
+    questionCount: 40,
+    responses: Object.fromEntries(scopedBlockOneItems.slice(0, 3).map((entry) => [entry.questionId, 'A'])),
+    launchedScope: Object.freeze({ mode: 'test', block: '2' }),
+  }),
+  createSyntheticAdapterState({
+    currentBlock: 2,
+    itemCount: 40,
+    currentItem: Object.freeze({ ...scopedBlockTwoItems[0], current: true }),
+    itemList: Object.freeze(scopedBlockTwoItems),
+    answers: Object.freeze({}),
+    marks: Object.freeze({}),
+  }),
+  scopedBlockTwoItems,
+  scopedBlockTwoItems[0],
+  { responses: Object.fromEntries(scopedBlockOneItems.slice(0, 3).map((entry) => [entry.questionId, 'A'])), changes: [] },
+  {},
+  [],
+  null,
+  'scoped-block-start'
+);
+assert.equal(scopedPatch.questionCount, 40, 'new scoped block starts with current block count only');
+assert.equal(scopedPatch.source.progress.byBlock[2].answered, 0, 'new scoped block does not count previous block answers');
+assert.equal(scopedPatch.source.progress.byBlock[2].total, 40);
+assert.deepEqual(scopedPatch.questionIds, scopedBlockTwoItems.map((entry) => entry.questionId));
+assert.equal(Object.keys(scopedPatch.responses).length, 0);
+
+const rekeyedCurrentBlockItems = Array.from({ length: 3 }, (_item, index) => Object.freeze({
+  questionId: `new-b2-q${index + 1}`,
+  componentId: `shared-component-${index + 1}`,
+  medleyId: 'shared-medley',
+  blockNumber: 2,
+  itemIndex: index + 1,
+}));
+const rekeyedPatch = buildTrackingAttemptPatch(
+  createSyntheticAttempt({
+    id: 'attempt-rekeyed-current-block',
+    launchedScope: Object.freeze({ mode: 'test', block: '2' }),
+    questionIds: ['legacy-b2-q1', 'legacy-b2-q2', 'legacy-b2-q3'],
+    questionCount: 3,
+    responses: { 'legacy-b2-q1': 'A', 'legacy-b2-q2': 'B' },
+    source: Object.freeze({
+      itemMetadataByQuestionId: Object.freeze({
+        'legacy-b2-q1': Object.freeze({ questionId: 'legacy-b2-q1', blockNumber: 2, itemIndex: 1, componentId: 'shared-component-1', medleyId: 'shared-medley' }),
+        'legacy-b2-q2': Object.freeze({ questionId: 'legacy-b2-q2', blockNumber: 2, itemIndex: 2, componentId: 'shared-component-2', medleyId: 'shared-medley' }),
+        'legacy-b2-q3': Object.freeze({ questionId: 'legacy-b2-q3', blockNumber: 2, itemIndex: 3, componentId: 'shared-component-3', medleyId: 'shared-medley' }),
+      }),
+    }),
+  }),
+  createSyntheticAdapterState({
+    currentBlock: 2,
+    itemCount: 3,
+    currentItem: Object.freeze({ ...rekeyedCurrentBlockItems[2], selectedAnswerId: 'C', current: true }),
+    itemList: Object.freeze(rekeyedCurrentBlockItems),
+    answers: Object.freeze({ 'new-b2-q3': 'C' }),
+    marks: Object.freeze({}),
+  }),
+  rekeyedCurrentBlockItems,
+  rekeyedCurrentBlockItems[2],
+  { responses: { 'legacy-b2-q1': 'A', 'legacy-b2-q2': 'B', 'new-b2-q3': 'C' }, changes: [] },
+  {},
+  [],
+  null,
+  'rekeyed-current-block'
+);
+assert.deepEqual(rekeyedPatch.responses, {
+  'new-b2-q1': 'A',
+  'new-b2-q2': 'B',
+  'new-b2-q3': 'C',
+}, 'current-block answers survive question-id rekeying');
+assert.equal(rekeyedPatch.source.progress.byBlock[2].answered, 3);
+assert.equal(rekeyedPatch.source.responseAliases.byPosition['2\u00001'], 'A');
+assert.equal(rekeyedPatch.source.responseAliases.byComponent['2\u0000shared-medley\u0000shared-component-2'], 'B');
+
+const aliasRecoveredPatch = buildTrackingAttemptPatch(
+  createSyntheticAttempt({
+    id: 'attempt-response-alias-recovery',
+    launchedScope: Object.freeze({ mode: 'test', block: '2' }),
+    questionIds: rekeyedCurrentBlockItems.map((entry) => entry.questionId),
+    questionCount: 3,
+    responses: { 'new-b2-q3': 'C' },
+    source: Object.freeze({
+      responseAliases: Object.freeze({
+        byPosition: Object.freeze({ '2\u00001': 'A', '2\u00002': 'B' }),
+        byComponent: Object.freeze({}),
+      }),
+      itemMetadataByQuestionId: Object.freeze(Object.fromEntries(rekeyedCurrentBlockItems.map((entry) => [entry.questionId, entry]))),
+    }),
+  }),
+  createSyntheticAdapterState({
+    currentBlock: 2,
+    itemCount: 3,
+    currentItem: Object.freeze({ ...rekeyedCurrentBlockItems[2], selectedAnswerId: 'C', current: true }),
+    itemList: Object.freeze(rekeyedCurrentBlockItems),
+    answers: Object.freeze({ 'new-b2-q3': 'C' }),
+    marks: Object.freeze({}),
+  }),
+  rekeyedCurrentBlockItems,
+  rekeyedCurrentBlockItems[2],
+  { responses: { 'new-b2-q3': 'C' }, changes: [] },
+  {},
+  [],
+  null,
+  'alias-recovered-current-block'
+);
+assert.deepEqual(aliasRecoveredPatch.responses, {
+  'new-b2-q1': 'A',
+  'new-b2-q2': 'B',
+  'new-b2-q3': 'C',
+}, 'stored response aliases recover non-current answers when adapter only reports current answer');
 
 console.log('adapter, key capture, and tracking tests passed');
