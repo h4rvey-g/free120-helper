@@ -18,6 +18,7 @@ import {
   isAttemptReviewReady,
   isEndExamRoute,
   pickLatestEndExamAttempt,
+  refreshAttemptQBankKeysForEndExam,
 } from '../src/ui/active-exam-pill.js';
 import { detectRuntimeContext } from '../src/core/runtime-context.js';
 import { createSyntheticAdapterState, createSyntheticAttempt } from './test-utils/fixtures.mjs';
@@ -203,5 +204,41 @@ assert.equal(endExamPatch.reviewReady, true);
 assert.equal(endExamPatch.status, ATTEMPT_STATUS.COMPLETED);
 assert.equal(endExamPatch.source.completion.reason, 'native-end-exam-route');
 assert.deepEqual(endExamPatch.source.completion.completedBlockNumbers, [1, 2, 3]);
+
+const staleQBankAttempt = Object.freeze({
+  id: 'attempt-endexam-qbank-refresh',
+  status: ATTEMPT_STATUS.IN_PROGRESS,
+  launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+  questionIds: Object.freeze(['legacy-live-q1']),
+  questionCount: 1,
+  responses: Object.freeze({ 'legacy-live-q1': 'A' }),
+  correctAnswers: Object.freeze({}),
+  answerKeyCapture: Object.freeze({ status: 'failed', source: 'qbank-cache', expectedCount: 1, knownCount: 0, unknownCount: 1, failureReason: 'qbank-cache-no-matches' }),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze({
+      'legacy-live-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1', blockNumber: 9, itemIndex: 1 }),
+    }),
+  }),
+});
+const qbankAttempt = Object.freeze({ id: 'qbank-cache:USMLE:STPF1:Block1', correctAnswers: Object.freeze({ 'qbank-q1': 'A' }), source: Object.freeze({ cacheKind: 'qbank' }) });
+const qbankSnapshot = Object.freeze({
+  id: 'qbank-snapshot-1',
+  attemptId: qbankAttempt.id,
+  questionId: 'qbank-q1',
+  blockNumber: 1,
+  itemIndex: 1,
+  correctAnswerId: 'A',
+  renderedHtml: '<div id="item1"><ol class="options"></ol></div>',
+  metadata: Object.freeze({ componentId: 'COMP1', medleyId: 'MED1', blockNumber: 1, itemIndex: 1 }),
+});
+const refreshedEndExamAttempt = await refreshAttemptQBankKeysForEndExam({
+  async listAttempts() { return [qbankAttempt]; },
+  async listQuestionSnapshots() { return [qbankSnapshot]; },
+  async updateAttempt(id, patch) { return Object.freeze({ ...staleQBankAttempt, id, ...patch }); },
+}, staleQBankAttempt, { warn() {}, debug() {} });
+assert.equal(refreshedEndExamAttempt.answerKeyCapture.status, 'complete');
+assert.equal(refreshedEndExamAttempt.answerKeyCapture.knownCount, 1);
+assert.equal(refreshedEndExamAttempt.correctAnswers['legacy-live-q1'], 'A');
+assert.equal(refreshedEndExamAttempt.scoreSummary.unknown, 0);
 
 console.log('scoring and active-exam tests passed');

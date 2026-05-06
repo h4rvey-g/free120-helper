@@ -223,33 +223,134 @@ function createEmptyWebfredState(reason = 'not-initialized') {
 function extractProgramFromText(value) {
   const text = normalizeString(value, '');
   const stepMatch = text.match(/Step\s*(?:1|2\s*CK|3)/i);
-  return stepMatch ? stepMatch[0].replace(/\s+/g, ' ').trim() : '';
+  if (stepMatch) {
+    return stepMatch[0].replace(/\s+/g, ' ').trim();
+  }
+  const codeMatch = text.match(/\bSTPF\s*(1|2|3)\b/i);
+  if (!codeMatch) {
+    return '';
+  }
+  return codeMatch[1] === '2' ? 'Step 2 CK' : `Step ${codeMatch[1]}`;
+}
+
+function extractBlockNumberFromText(value) {
+  const match = normalizeString(value, '').match(/\bblock\s*(\d+)\b/i);
+  return match ? match[1] : '';
+}
+
+function isGenericProgramText(value) {
+  return /^(?:usmle|nbme)$/i.test(normalizeString(value, ''));
+}
+
+function isGenericExamDriverText(value) {
+  const text = normalizeString(value, '').replace(/\s+/g, ' ');
+  return /^(?:nbme\s*)?(?:exam\s*)?driver$/i.test(text)
+    || /\bnbme\s+exam\s+driver\b/i.test(text);
+}
+
+function preferSpecificText(primary, fallback, genericPredicate) {
+  const primaryText = normalizeString(primary, '');
+  const fallbackText = normalizeString(fallback, '');
+  if (fallbackText && (!primaryText || (typeof genericPredicate === 'function' && genericPredicate(primaryText) && !genericPredicate(fallbackText)))) {
+    return fallbackText;
+  }
+  return primaryText || fallbackText;
+}
+
+function getUrlFromWindow(adapterWindow) {
+  try {
+    return adapterWindow && adapterWindow.location ? new URL(adapterWindow.location.href) : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function getMergedSearchParams(adapterWindow) {
+  const url = getUrlFromWindow(adapterWindow);
+  const searchParams = new URLSearchParams(url ? url.search : '');
+  const hash = normalizeString(url && url.hash, '');
+  const hashQueryIndex = hash.indexOf('?');
+  if (hashQueryIndex >= 0) {
+    const hashQuery = hash.slice(hashQueryIndex + 1).split('#')[0];
+    const hashParams = new URLSearchParams(hashQuery);
+    hashParams.forEach((value, key) => {
+      if (!searchParams.has(key)) {
+        searchParams.append(key, value);
+      }
+    });
+  }
+  return Object.freeze({ url, searchParams });
+}
+
+function readSearchParam(searchParams, names) {
+  const candidates = Array.isArray(names) ? names : [names];
+  for (const name of candidates) {
+    const direct = searchParams && searchParams.get(name);
+    if (normalizeString(direct, '')) {
+      return normalizeString(direct, '');
+    }
+  }
+  const lowerNames = new Set(candidates.map((name) => normalizeString(name, '').toLowerCase()).filter(Boolean));
+  if (!searchParams || !lowerNames.size) {
+    return '';
+  }
+  for (const [key, value] of searchParams.entries()) {
+    if (lowerNames.has(normalizeString(key, '').toLowerCase()) && normalizeString(value, '')) {
+      return normalizeString(value, '');
+    }
+  }
+  return '';
+}
+
+function getLaunchedScopeBlockNumber(scope) {
+  if (!isPlainObject(scope)) {
+    return 0;
+  }
+  return coercePositiveInteger(scope.block || scope.selectedBlock || scope.launchedBlock, 0)
+    || coercePositiveInteger(extractBlockNumberFromText(scope.testDefinitionDisplayName || scope.displayName || scope.section || scope.testDefinitionName), 0);
+}
+
+function launchedScopeTextSuggestsAllBlocks(scope) {
+  if (!isPlainObject(scope)) {
+    return false;
+  }
+  return /\b(?:all|full|entire|whole|complete)\b/i.test([
+    scope.mode,
+    scope.testMode,
+    scope.scope,
+    scope.launchMode,
+    scope.deliveryMode,
+  ].map((value) => normalizeString(value, '')).join(' '));
+}
+
+function resolveEffectiveCurrentBlock(rawCurrentBlock, launchedScope, options = {}) {
+  const currentBlock = coercePositiveInteger(rawCurrentBlock, 0);
+  const scopeBlock = getLaunchedScopeBlockNumber(launchedScope);
+  const blockCount = coercePositiveInteger(options.blockCount, 0);
+  if (currentBlock && (launchedScopeTextSuggestsAllBlocks(launchedScope) || (blockCount > 1 && currentBlock !== scopeBlock))) {
+    return currentBlock;
+  }
+  return scopeBlock || currentBlock;
 }
 
 function extractExamIdentityFromDom(adapterDocument, adapterWindow) {
   const title = normalizeString(adapterDocument && adapterDocument.title, '');
-  const url = adapterWindow && adapterWindow.location ? new URL(adapterWindow.location.href) : null;
-  const searchParams = url ? url.searchParams : null;
-  const candidateText = [
-    title,
-    searchParams && searchParams.get('program'),
-    searchParams && searchParams.get('exam'),
-    searchParams && searchParams.get('section'),
-  ];
+  const { searchParams } = getMergedSearchParams(adapterWindow);
+  const rawProgram = readSearchParam(searchParams, ['program', 'Program', 'programName']);
+  const rawExamName = readSearchParam(searchParams, ['exam', 'Exam', 'examName', 'assessmentName', 'formName']);
+  const rawSection = readSearchParam(searchParams, ['section', 'Section', 'block', 'testDefinitionDisplayName', 'displayName', 'testDefinitionName']);
+  const candidateText = [title, rawProgram, rawExamName, rawSection];
+  const programFromText = extractProgramFromText(candidateText.join(' '));
   const program = firstNonEmpty([
-    searchParams && searchParams.get('program'),
-    searchParams && searchParams.get('Program'),
-    extractProgramFromText(candidateText.join(' ')),
+    isGenericProgramText(rawProgram) ? programFromText : rawProgram,
+    programFromText,
+    rawProgram,
   ]);
   const examName = firstNonEmpty([
-    searchParams && searchParams.get('exam'),
-    searchParams && searchParams.get('Exam'),
-    title,
+    isGenericExamDriverText(rawExamName) ? '' : rawExamName,
+    isGenericExamDriverText(title) ? '' : title,
   ]);
-  const section = firstNonEmpty([
-    searchParams && searchParams.get('section'),
-    searchParams && searchParams.get('block'),
-  ]);
+  const section = rawSection;
 
   return Object.freeze({
     program,
@@ -259,17 +360,26 @@ function extractExamIdentityFromDom(adapterDocument, adapterWindow) {
 }
 
 function extractLaunchedScopeFromDom(adapterWindow) {
-  const url = adapterWindow && adapterWindow.location ? new URL(adapterWindow.location.href) : null;
+  const { url, searchParams } = getMergedSearchParams(adapterWindow);
   if (!url) {
     return Object.freeze({});
   }
   const scope = {};
-  ['program', 'exam', 'section', 'block', 'mode', 'test', 'scope'].forEach((key) => {
-    const value = normalizeString(url.searchParams.get(key) || url.searchParams.get(key.toUpperCase()), '');
+  [
+    'program', 'programName', 'exam', 'examName', 'section', 'block', 'mode', 'test', 'scope',
+    'testDefinitionName', 'testDefinitionDisplayName', 'publicationName', 'displayName',
+  ].forEach((key) => {
+    const value = readSearchParam(searchParams, [key, key.toUpperCase()]);
     if (value) {
       scope[key] = value;
     }
   });
+  if (!scope.block) {
+    const blockNumber = extractBlockNumberFromText(scope.testDefinitionDisplayName || scope.displayName || scope.section || scope.testDefinitionName);
+    if (blockNumber) {
+      scope.block = blockNumber;
+    }
+  }
   scope.path = url.pathname;
   return Object.freeze(scope);
 }
@@ -348,7 +458,7 @@ function extractSelectedAnswerIdFromDom(root) {
   ]);
 }
 
-function extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow) {
+function extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow, options = {}) {
   const medleyElement = root && typeof root.closest === 'function'
     ? root.closest('#medley, [id*="medley"], [data-medley-id]')
     : null;
@@ -358,7 +468,9 @@ function extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow) {
     safeDatasetValue(root, 'itemIndex') || safeDatasetValue(root, 'index') || safeAttribute(root, 'data-ng-init') && safeAttribute(root, 'data-ng-init').match(/index\D+(\d+)/i)?.[1],
     navState.currentItemIndex || 1
   );
-  const blockNumber = navState.currentBlock || coercePositiveInteger(safeDatasetValue(root, 'block') || safeDatasetValue(root, 'blockNumber'), 1);
+  const blockNumber = coercePositiveInteger(options.currentBlock, 0)
+    || navState.currentBlock
+    || coercePositiveInteger(safeDatasetValue(root, 'block') || safeDatasetValue(root, 'blockNumber'), 1);
 
   return buildQuestionIdentity({
     examProgram: examIdentity.program,
@@ -489,7 +601,7 @@ function extractTerminalStateFromDom(adapterDocument, adapterWindow, navState = 
   });
 }
 
-function extractItemListFromDom(adapterDocument, adapterWindow, examIdentity) {
+function extractItemListFromDom(adapterDocument, adapterWindow, examIdentity, options = {}) {
   if (!adapterDocument || typeof adapterDocument.querySelector !== 'function') {
     return [];
   }
@@ -500,6 +612,7 @@ function extractItemListFromDom(adapterDocument, adapterWindow, examIdentity) {
   }
 
   const navState = extractNavigationStateFromDom(adapterDocument, adapterWindow);
+  const effectiveCurrentBlock = coercePositiveInteger(options.currentBlock, navState.currentBlock || 1);
   return getQuestionNavigationItems(nav).map((item, index) => {
     const visibleIndex = coercePositiveInteger(safeElementText(item.querySelector('span.index') || item).match(/\d+/)?.[0], index + 1);
     const medleyId = safeDatasetValue(item, 'medleyId') || safeAttribute(item, 'data-medley-id');
@@ -511,7 +624,7 @@ function extractItemListFromDom(adapterDocument, adapterWindow, examIdentity) {
       medleyId,
       componentId,
       itemId: safeDatasetValue(item, 'itemId') || safeAttribute(item, 'data-item-id'),
-      blockNumber: navState.currentBlock || 1,
+      blockNumber: effectiveCurrentBlock || 1,
       itemIndex: visibleIndex,
     });
     const className = normalizeString(item.className, '').toLowerCase();
@@ -535,13 +648,14 @@ function extractDomFallbackState(adapterWindow, adapterDocument) {
   const examIdentity = extractExamIdentityFromDom(adapterDocument, adapterWindow);
   const launchedScope = extractLaunchedScopeFromDom(adapterWindow);
   const navState = extractNavigationStateFromDom(adapterDocument, adapterWindow);
-  const terminalState = extractTerminalStateFromDom(adapterDocument, adapterWindow, navState);
-  const itemList = extractItemListFromDom(adapterDocument, adapterWindow, examIdentity);
-  const identity = root ? extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow) : buildQuestionIdentity({
+  const effectiveCurrentBlock = resolveEffectiveCurrentBlock(navState.currentBlock, launchedScope, { blockCount: navState.blockCount });
+  const terminalState = extractTerminalStateFromDom(adapterDocument, adapterWindow, { ...navState, currentBlock: effectiveCurrentBlock || navState.currentBlock });
+  const itemList = extractItemListFromDom(adapterDocument, adapterWindow, examIdentity, { currentBlock: effectiveCurrentBlock });
+  const identity = root ? extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow, { currentBlock: effectiveCurrentBlock }) : buildQuestionIdentity({
     examProgram: examIdentity.program,
     examName: examIdentity.examName,
     examSection: examIdentity.section,
-    blockNumber: navState.currentBlock || 1,
+    blockNumber: effectiveCurrentBlock || navState.currentBlock || 1,
     itemIndex: navState.currentItemIndex || 1,
   });
   const selectedAnswerId = root ? extractSelectedAnswerIdFromDom(root) : '';
@@ -565,7 +679,7 @@ function extractDomFallbackState(adapterWindow, adapterDocument) {
     source: WEBFRED_STATE_SOURCE.DOM_FALLBACK,
     examIdentity,
     launchedScope,
-    currentBlock: navState.currentBlock || (currentItem && currentItem.blockNumber) || 0,
+    currentBlock: effectiveCurrentBlock || navState.currentBlock || (currentItem && currentItem.blockNumber) || 0,
     blockCount: navState.blockCount,
     itemCount: navState.itemCount || itemList.length || (currentItem ? 1 : 0),
     currentItem,
@@ -573,7 +687,7 @@ function extractDomFallbackState(adapterWindow, adapterDocument) {
     answers,
     marks,
     currentContent,
-    blockMetadata: navState.currentBlock ? [{ blockNumber: navState.currentBlock, itemCount: navState.itemCount || itemList.length }] : [],
+    blockMetadata: (effectiveCurrentBlock || navState.currentBlock) ? [{ blockNumber: effectiveCurrentBlock || navState.currentBlock, itemCount: navState.itemCount || itemList.length }] : [],
     terminalState,
     capabilities: Object.freeze({
       hasDomFallback: Boolean(root || itemList.length),
@@ -977,19 +1091,29 @@ function normalizeChoicesFromAngular(rawChoices) {
 
 function normalizeExamIdentityFromAngular(roots, fallbackIdentity) {
   const fallback = fallbackIdentity || {};
-  const program = firstNonEmpty([
+  const rawProgram = firstNonEmpty([
     findFirstSemanticValue(roots, ['examProgram', 'program', 'programName', 'usmleProgram', 'testProgram'], { maxDepth: 3 }),
-    extractProgramFromText(findFirstSemanticValue(roots, ['examName', 'examTitle', 'testName', 'title'], { maxDepth: 2 })),
     fallback.program,
   ]);
-  const examName = firstNonEmpty([
+  const rawExamName = firstNonEmpty([
     findFirstSemanticValue(roots, ['examName', 'examTitle', 'testName', 'assessmentName', 'formName'], { maxDepth: 3 }),
     fallback.examName,
   ]);
-  const section = firstNonEmpty([
-    findFirstSemanticValue(roots, ['sectionName', 'examSection', 'section', 'sectionTitle', 'blockName'], { maxDepth: 3 }),
+  const rawSection = firstNonEmpty([
+    findFirstSemanticValue(roots, ['testDefinitionDisplayName', 'sectionName', 'examSection', 'section', 'sectionTitle', 'blockName'], { maxDepth: 3 }),
     fallback.section,
   ]);
+  const identityText = [rawProgram, rawExamName, rawSection, fallback.program, fallback.examName, fallback.section].join(' ');
+  const programFromText = extractProgramFromText(identityText);
+  const program = firstNonEmpty([
+    isGenericProgramText(rawProgram) ? programFromText : rawProgram,
+    programFromText,
+    rawProgram,
+  ]);
+  const examName = isGenericExamDriverText(rawExamName)
+    ? (isGenericExamDriverText(fallback.examName) ? '' : normalizeString(fallback.examName, ''))
+    : preferSpecificText(rawExamName, fallback.examName, isGenericExamDriverText);
+  const section = rawSection;
 
   return Object.freeze({
     program,
@@ -1004,6 +1128,24 @@ function normalizeLaunchedScopeFromAngular(roots, fallbackScope) {
   ], { maxDepth: 2 });
   const scope = isPlainObject(rawScope) ? safeJsonCompatibleValue(rawScope) : {};
   const fallback = isPlainObject(fallbackScope) ? fallbackScope : {};
+  const rawDisplayName = firstNonEmpty([
+    isReadableObject(rawScope) && readCandidateProperty(rawScope, ['testDefinitionDisplayName', 'displayName', 'blockName', 'sectionName', 'name']),
+    findFirstSemanticValue(roots, ['testDefinitionDisplayName', 'blockName', 'sectionName', 'displayName'], { maxDepth: 3 }),
+    fallback.testDefinitionDisplayName,
+    fallback.displayName,
+    fallback.section,
+  ]);
+  const rawTestDefinitionName = firstNonEmpty([
+    isReadableObject(rawScope) && readCandidateProperty(rawScope, ['testDefinitionName', 'testDefinition']),
+    findFirstSemanticValue(roots, ['testDefinitionName', 'testDefinition'], { maxDepth: 3 }),
+    fallback.testDefinitionName,
+  ]);
+  const explicitBlock = firstNonEmpty([
+    isReadableObject(rawScope) && readCandidateProperty(rawScope, ['block', 'blockNumber', 'selectedBlock', 'launchedBlock']),
+    findFirstSemanticValue(roots, ['selectedBlock', 'launchedBlock', 'blockNumber'], { maxDepth: 2 }),
+    fallback.block,
+  ]);
+  const blockFromText = extractBlockNumberFromText([rawDisplayName, rawTestDefinitionName, fallback.section].join(' '));
   return Object.freeze({
     ...fallback,
     ...(isPlainObject(scope) ? scope : {}),
@@ -1012,10 +1154,13 @@ function normalizeLaunchedScopeFromAngular(roots, fallbackScope) {
       findFirstSemanticValue(roots, ['mode', 'examMode', 'testMode'], { maxDepth: 2 }),
       fallback.mode,
     ]),
-    block: firstNonEmpty([
-      isReadableObject(rawScope) && readCandidateProperty(rawScope, ['block', 'blockNumber', 'selectedBlock']),
-      findFirstSemanticValue(roots, ['selectedBlock', 'launchedBlock', 'blockNumber'], { maxDepth: 2 }),
-      fallback.block,
+    block: firstNonEmpty([explicitBlock, blockFromText]),
+    testDefinitionName: rawTestDefinitionName,
+    testDefinitionDisplayName: rawDisplayName,
+    publicationName: firstNonEmpty([
+      isReadableObject(rawScope) && readCandidateProperty(rawScope, ['publicationName', 'examPublicationName']),
+      findFirstSemanticValue(roots, ['publicationName', 'examPublicationName'], { maxDepth: 3 }),
+      fallback.publicationName,
     ]),
   });
 }
@@ -1564,14 +1709,14 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
   const fallbackExamIdentity = domState && domState.examIdentity ? domState.examIdentity : extractExamIdentityFromDom(adapterDocument, adapterWindow);
   const examIdentity = normalizeExamIdentityFromAngular(roots, fallbackExamIdentity);
   const launchedScope = normalizeLaunchedScopeFromAngular(roots, domState && domState.launchedScope);
-  const currentBlock = coercePositiveInteger(
-    domState && domState.currentBlock,
-    coercePositiveInteger(findFirstSemanticValue(roots, ['currentBlock', 'blockNumber', 'activeBlock', 'selectedBlock'], { maxDepth: 3 }), 0)
-  );
   const blockCount = coercePositiveInteger(
     domState && domState.blockCount,
     coercePositiveInteger(findFirstSemanticValue(roots, ['blockCount', 'numberOfBlocks', 'totalBlocks', 'blocksCount'], { maxDepth: 3 }), 0)
   );
+  const currentBlock = resolveEffectiveCurrentBlock(coercePositiveInteger(
+    domState && domState.currentBlock,
+    coercePositiveInteger(findFirstSemanticValue(roots, ['currentBlock', 'blockNumber', 'activeBlock', 'selectedBlock'], { maxDepth: 3 }), 0)
+  ), launchedScope, { blockCount });
   const itemCount = coercePositiveInteger(
     domState && domState.itemCount,
     coercePositiveInteger(findFirstSemanticValue(roots, ['itemCount', 'questionCount', 'itemsCount', 'totalItems', 'totalQuestions'], { maxDepth: 3 }), 0)
@@ -1753,7 +1898,10 @@ function mergeWebfredState(angularState, domState, options = {}) {
       ...((fallback && fallback.launchedScope) || {}),
       ...(primary.launchedScope || {}),
     }),
-    currentBlock: primary.currentBlock || (fallback && fallback.currentBlock) || (currentItem && currentItem.blockNumber) || 0,
+    currentBlock: resolveEffectiveCurrentBlock(primary.currentBlock || (fallback && fallback.currentBlock) || (currentItem && currentItem.blockNumber) || 0, {
+      ...((fallback && fallback.launchedScope) || {}),
+      ...(primary.launchedScope || {}),
+    }, { blockCount: primary.blockCount || (fallback && fallback.blockCount) || 0 }),
     blockCount: primary.blockCount || (fallback && fallback.blockCount) || 0,
     itemCount: primary.itemCount || itemList.length || (fallback && fallback.itemCount) || 0,
     currentItem,

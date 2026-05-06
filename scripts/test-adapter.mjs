@@ -56,6 +56,8 @@ const nav = el('nav', {}, [el('ol', { id: 'leftnav' }, [
 const body = el('main', {}, [nav, el('section', { id: 'item' }, [el('article', { id: 'content' }, [medley])]), el('div', {}, ['Block 1 of 1'])]);
 const fakeDocument = createFakeDocument(body, { title: 'Synthetic Step 1 Free 120' });
 const fakeWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%201');
+const genericDriverDocument = createFakeDocument(body, { title: 'NBME Exam Driver' });
+const genericDriverWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=USMLE&exam=NBME%20Exam%20Driver&section=Step%201%20Block%202&block=2&mode=test');
 
 assert.equal(firstNonEmpty(['', 'A', 'B']), 'A');
 assert.equal(coercePositiveInteger('3', 1), 3);
@@ -92,6 +94,60 @@ assert.equal(navState.currentItemIndex, 1);
 assert.equal(navState.itemCount, 2);
 assert.equal(isNavigationKeyItem(nav.querySelector('li.keyitem')), true);
 assert.equal(findKeyNavigationItem(fakeDocument), nav.querySelector('li.keyitem'));
+const genericDriverState = createWebfredSiteAdapter({ window: genericDriverWindow, document: genericDriverDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.equal(genericDriverState.examIdentity.program, 'Step 1', 'generic USMLE program label upgrades to concrete Step label');
+assert.equal(genericDriverState.examIdentity.examName, '', 'generic NBME Exam Driver title does not become history exam name');
+assert.equal(genericDriverState.examIdentity.section, 'Step 1 Block 2');
+assert.equal(genericDriverState.launchedScope.block, '2');
+assert.equal(genericDriverState.launchedScope.section, 'Step 1 Block 2');
+assert.equal(genericDriverState.currentBlock, 2, 'hash/query launched block overrides missing DOM block text');
+assert.equal(genericDriverState.currentItem.blockNumber, 2);
+assert.match(genericDriverState.currentItem.questionId, /Block-2/);
+
+const staleScopeAngularItems = Array.from({ length: 200 }, (_entry, index) => ({
+  componentId: `scope-component-${index + 1}`,
+  medleyId: `scope-medley-${Math.floor(index / 40) + 1}`,
+}));
+const staleScopeNav = el('nav', {}, [el('ol', { id: 'leftnav' }, Array.from({ length: 40 }, (_entry, index) => (
+  el('li', index === 0 ? { class: 'currentitem', 'aria-current': 'true' } : {}, [el('span', { class: 'index' }, [String(index + 1)])])
+)))]);
+const staleScopeBody = el('main', {}, [
+  staleScopeNav,
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'medley-5', 'data-medley-id': 'scope-medley-5' }, [
+    el('div', { id: 'item-scope-161', 'data-component-id': 'scope-component-161', 'data-item-index': '1' }, [
+      el('div', { class: 'NBExposition' }, ['Stale launched scope stem']),
+      el('div', { id: 'item-scope-161_div', class: 'NBOptionListComp answerbox' }, [choiceRows]),
+    ]),
+  ])])]),
+  el('div', {}, ['Block 5 of 5']),
+]);
+const staleScopeDocument = createFakeDocument(staleScopeBody, { title: 'Synthetic Step 1 Free 120' });
+const staleScopeWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%201&block=1&mode=test');
+staleScopeWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          launchedScope: { block: '1', testDefinitionDisplayName: 'Step 1 Block 1', mode: 'test' },
+          currentBlock: 1,
+          blockCount: 5,
+          totalQuestions: 200,
+          itemList: staleScopeAngularItems,
+          currentItem: staleScopeAngularItems[160],
+        },
+      }),
+    }),
+  }),
+};
+const staleScopeState = createWebfredSiteAdapter({ window: staleScopeWindow, document: staleScopeDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.equal(staleScopeState.currentBlock, 5, 'reliable multi-block DOM current block overrides stale launched scope block');
+assert.equal(staleScopeState.source, 'mixed');
+assert.equal(staleScopeState.itemList.length, 40);
+assert.equal(staleScopeState.itemList[0].componentId, 'scope-component-161');
+assert.equal(staleScopeState.itemList[0].blockNumber, 5);
+assert.equal(staleScopeState.currentItem.componentId, 'scope-component-161');
+assert.equal(staleScopeState.currentItem.blockNumber, 5);
 
 assert.equal(findCurrentDomItemRoot(fakeDocument, fakeWindow), item);
 const domIdentity = extractQuestionIdentityFromDom(item, fakeDocument, fakeWindow);

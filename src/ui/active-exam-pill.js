@@ -1,6 +1,7 @@
 import { SCRIPT, ATTEMPT_STATUS } from '../core/constants.js';
 import { nowIso } from '../core/logger.js';
-import { buildAttemptCompletionPatch } from '../scoring/grader.js';
+import { buildAttemptCompletionPatch, buildAttemptScoreSummary } from '../scoring/grader.js';
+import { loadQBankCaptureContext, resolveQBankCaptureForItems } from '../qbank/cache-lookup.js';
 
 const ACTIVE_EXAM_PILL_STYLE_ID = 'f120-active-exam-pill-style';
 const END_EXAM_REVIEW_CTA_ID = 'f120-end-exam-review-cta';
@@ -369,10 +370,79 @@ function buildEndExamCompletionAdapterState(attempt, adapterState = null) {
 }
 
 function buildEndExamCompletionPatch(attempt, adapterState = null, options = {}) {
+  const completedAt = options.completedAt || nowIso();
   return buildAttemptCompletionPatch(attempt, {
     adapterState: buildEndExamCompletionAdapterState(attempt, adapterState),
-    completedAt: options.completedAt || nowIso(),
+    completedAt,
     reason: normalizeString(options.reason, 'native-end-exam-route'),
+  });
+}
+
+function hasFailedQBankNoMatch(attempt) {
+  const summary = isObject(attempt && attempt.answerKeyCapture) ? attempt.answerKeyCapture : {};
+  return normalizeString(summary.status, '') === 'failed'
+    && normalizeString(summary.failureReason, '') === 'qbank-cache-no-matches';
+}
+
+function getAttemptMetadataByQuestionId(attempt) {
+  const source = isObject(attempt && attempt.source) ? attempt.source : {};
+  return isObject(source.itemMetadataByQuestionId) ? source.itemMetadataByQuestionId : {};
+}
+
+function buildItemListFromAttemptMetadata(attempt) {
+  const metadataByQuestionId = getAttemptMetadataByQuestionId(attempt);
+  return (Array.isArray(attempt && attempt.questionIds) ? attempt.questionIds : [])
+    .map((questionId, index) => {
+      const metadata = isObject(metadataByQuestionId[questionId]) ? metadataByQuestionId[questionId] : {};
+      return Object.freeze({
+        questionId,
+        componentId: normalizeString(metadata.componentId, ''),
+        medleyId: normalizeString(metadata.medleyId, ''),
+        blockNumber: coerceNonNegativeInteger(metadata.blockNumber, 0) || coerceNonNegativeInteger(attempt && attempt.launchedScope && attempt.launchedScope.block, 1) || 1,
+        itemIndex: coerceNonNegativeInteger(metadata.itemIndex, index + 1) || index + 1,
+        selectedAnswerId: normalizeString(attempt && attempt.responses && attempt.responses[questionId], ''),
+        identitySource: normalizeString(metadata.identitySource, ''),
+        source: normalizeString(metadata.source, ''),
+      });
+    })
+    .filter((item) => normalizeString(item.questionId, ''));
+}
+
+async function refreshAttemptQBankKeysForEndExam(storage, attempt, logger = null) {
+  if (!storage || !attempt || !hasFailedQBankNoMatch(attempt)) {
+    return attempt;
+  }
+  const itemList = buildItemListFromAttemptMetadata(attempt);
+  if (!itemList.length) {
+    return attempt;
+  }
+  const context = await loadQBankCaptureContext(storage, logger);
+  const capture = resolveQBankCaptureForItems(context, {
+    attempt,
+    itemList,
+    questionIds: attempt.questionIds,
+    expectedCount: Math.max(itemList.length, coerceNonNegativeInteger(attempt.questionCount, 0)),
+    allowScopeBlockRepair: true,
+  });
+  const summary = capture && capture.summary ? capture.summary : null;
+  const correctAnswers = capture && isObject(capture.correctAnswers) ? capture.correctAnswers : {};
+  if (!summary || !Object.keys(correctAnswers).length) {
+    return attempt;
+  }
+  const patchedAttempt = Object.freeze({
+    ...attempt,
+    correctAnswers: Object.freeze({ ...(isObject(attempt.correctAnswers) ? attempt.correctAnswers : {}), ...correctAnswers }),
+    answerKeyCapture: Object.freeze({ ...summary }),
+    source: Object.freeze({
+      ...(isObject(attempt.source) ? attempt.source : {}),
+      qbankCache: capture && capture.source ? capture.source : {},
+    }),
+  });
+  return storage.updateAttempt(attempt.id, {
+    correctAnswers: patchedAttempt.correctAnswers,
+    answerKeyCapture: patchedAttempt.answerKeyCapture,
+    scoreSummary: buildAttemptScoreSummary(patchedAttempt, { reason: 'end-exam-qbank-refresh' }),
+    source: patchedAttempt.source,
   });
 }
 
@@ -872,15 +942,24 @@ function createActiveExamPill(options = {}) {
       if (!candidate) {
         return;
       }
+      const beforeKeyStatus = summarizeQBankKeys(candidate);
+      if (endExamReview.routeMatched && hasFunction(storage, 'updateAttempt')) {
+        candidate = await refreshAttemptQBankKeysForEndExam(storage, candidate, logger);
+      }
+      const afterKeyStatus = summarizeQBankKeys(candidate);
       if (endExamReview.routeMatched && !isAttemptReviewReady(candidate) && hasAttemptReviewEvidence(candidate) && hasFunction(storage, 'updateAttempt')) {
         endExamAttempt = await storage.updateAttempt(candidate.id, buildEndExamCompletionPatch(candidate, snapshot.adapterState));
+        endExamAttempt = await refreshAttemptQBankKeysForEndExam(storage, endExamAttempt, logger);
         shouldRefresh = true;
         dispatchReviewReady(endExamAttempt);
         return;
       }
       shouldRefresh = !endExamAttempt
         || normalizeString(endExamAttempt.id, '') !== normalizeString(candidate.id, '')
-        || isAttemptReviewReady(endExamAttempt) !== isAttemptReviewReady(candidate);
+        || isAttemptReviewReady(endExamAttempt) !== isAttemptReviewReady(candidate)
+        || beforeKeyStatus.status !== afterKeyStatus.status
+        || beforeKeyStatus.knownCount !== afterKeyStatus.knownCount
+        || beforeKeyStatus.unknownCount !== afterKeyStatus.unknownCount;
       endExamAttempt = candidate;
     } catch (error) {
       logger.warn('End-exam review CTA sync failed.', error);
@@ -953,7 +1032,7 @@ function createActiveExamPill(options = {}) {
     applyVisibility(snapshot.settings);
     applyEndExamReviewCta(snapshot);
     renderSettingsDetails(adapterDocument, dom.detailContainer, snapshot);
-    if (snapshot.endExamReview && snapshot.endExamReview.visible && !snapshot.endExamReview.enabled) {
+    if (snapshot.endExamReview && snapshot.endExamReview.visible && (!snapshot.endExamReview.enabled || hasFailedQBankNoMatch(snapshot.attempt))) {
       void syncEndExamAttempt(snapshot);
     }
     return snapshot;
@@ -1160,6 +1239,7 @@ export {
   pickLatestEndExamAttempt,
   buildEndExamCompletionAdapterState,
   buildEndExamCompletionPatch,
+  refreshAttemptQBankKeysForEndExam,
   createActiveExamPill,
 };
 

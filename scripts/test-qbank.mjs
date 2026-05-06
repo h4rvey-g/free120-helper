@@ -80,6 +80,12 @@ const blockTwoCapture = resolveQBankCaptureForItems(context, {
   expectedCount: 1,
 });
 assert.deepEqual(blockTwoCapture.correctAnswers, {}, 'qbank component matches stay block-scoped');
+const staleScopeLiveBlockCapture = resolveQBankCaptureForItems(context, {
+  launchedScope: Object.freeze({ block: '1', testDefinitionDisplayName: 'Step 1 Block 1' }),
+  itemList: [Object.freeze({ questionId: 'live-b5-q1', componentId: 'COMP1', medleyId: 'MED1', blockNumber: 5, itemIndex: 1 })],
+  expectedCount: 1,
+});
+assert.deepEqual(staleScopeLiveBlockCapture.correctAnswers, {}, 'live item block does not fall back to stale launched-scope block keys');
 const qbankSnapshots = await loadQBankSnapshotsForAttempt(qbankStorage, {
   questionIds: ['live-q1'],
   source: Object.freeze({ itemMetadataByQuestionId: Object.freeze({ 'live-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1', blockNumber: 1, itemIndex: 1 }) }) }),
@@ -87,5 +93,27 @@ const qbankSnapshots = await loadQBankSnapshotsForAttempt(qbankStorage, {
 assert.equal(qbankSnapshots.length, 1);
 assert.equal(qbankSnapshots[0].questionId, 'live-q1');
 assert.equal(qbankSnapshots[0].metadata.qbankCacheOriginalQuestionId, qbankSnapshot.questionId);
+const metadataOnlyScopeCapture = resolveQBankCaptureForItems(context, {
+  attempt: Object.freeze({
+    launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+    questionIds: Object.freeze(['legacy-live-q1']),
+    source: Object.freeze({ itemMetadataByQuestionId: Object.freeze({
+      'legacy-live-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1', blockNumber: 9, itemIndex: 1 }),
+    }) }),
+  }),
+  questionIds: ['legacy-live-q1'],
+  expectedCount: 1,
+});
+assert.deepEqual(metadataOnlyScopeCapture.correctAnswers, { 'legacy-live-q1': 'A' }, 'launched scope block repairs stale item metadata at endExam');
+assert.equal(metadataOnlyScopeCapture.source.matchSourcesByQuestionId['legacy-live-q1'], 'component-medley');
+const metadataOnlyScopeSnapshots = await loadQBankSnapshotsForAttempt(qbankStorage, {
+  launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+  questionIds: Object.freeze(['legacy-live-q1']),
+  source: Object.freeze({ itemMetadataByQuestionId: Object.freeze({
+    'legacy-live-q1': Object.freeze({ componentId: 'COMP1', medleyId: 'MED1', blockNumber: 9, itemIndex: 1 }),
+  }) }),
+}, []);
+assert.equal(metadataOnlyScopeSnapshots.length, 1, 'review qbank fallback uses launched scope block when stored metadata drifted');
+assert.equal(metadataOnlyScopeSnapshots[0].questionId, 'legacy-live-q1');
 
 console.log('qbank cache tests passed');

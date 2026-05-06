@@ -95,6 +95,14 @@ const historyRow = formatHistoryAttemptRow(historyAttempt);
 assert.equal(historyRow.exam, 'Step 1 · Free 120 · Block 1');
 assert.equal(historyRow.launchedScope, 'test · Block 1');
 assert.equal(historyRow.blockCount, '1');
+const genericDriverHistoryRow = formatHistoryAttemptRow({
+  ...historyAttempt,
+  examIdentity: Object.freeze({ program: 'USMLE', examName: 'NBME Exam Driver', section: 'Step 1 Block 2' }),
+  launchedScope: Object.freeze({ mode: 'test', block: '2', section: 'Step 1 Block 2' }),
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 2, itemCount: 3, label: 'Step 1 Block 2' })]),
+});
+assert.equal(genericDriverHistoryRow.exam, 'Step 1 · Block 2');
+assert.equal(genericDriverHistoryRow.launchedScope, 'test · Step 1 Block 2');
 assert.equal(historyRow.score, '2/3 (66.7%)');
 assert.equal(historyRow.status, 'Completed');
 assert.equal(historyRow.reviewReady, true);

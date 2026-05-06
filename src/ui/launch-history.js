@@ -119,33 +119,148 @@ function uniqueStrings(values) {
   return result;
 }
 
-function summarizeExamIdentity(examIdentity) {
-  const identity = isPlainObject(examIdentity) ? examIdentity : {};
-  const parts = uniqueStrings([
+function normalizeDisplayText(value) {
+  return normalizeString(value, '').replace(/\s+/g, ' ').trim();
+}
+
+function extractStepLabel(value) {
+  const text = normalizeDisplayText(value);
+  const match = text.match(/\bStep\s*(1|2\s*CK|3)\b/i);
+  if (match) {
+    return `Step ${match[1].replace(/\s+/g, ' ').toUpperCase().replace(/^1$|^3$/, (entry) => entry)}`;
+  }
+  const codeMatch = text.match(/\bSTPF\s*(1|2|3)\b/i);
+  if (!codeMatch) {
+    return '';
+  }
+  return codeMatch[1] === '2' ? 'Step 2 CK' : `Step ${codeMatch[1]}`;
+}
+
+function extractBlockNumber(value) {
+  const match = normalizeDisplayText(value).match(/\bblock\s*(\d+)\b/i);
+  return match ? Number(match[1]) : 0;
+}
+
+function formatBlockLabel(value) {
+  const text = normalizeDisplayText(value);
+  const blockNumber = extractBlockNumber(text) || coercePositiveInteger(text, 0);
+  if (blockNumber) {
+    return `Block ${blockNumber}`;
+  }
+  return /^block\b/i.test(text) ? text : '';
+}
+
+function isGenericExamPart(value) {
+  const text = normalizeDisplayText(value);
+  return /^(?:usmle|nbme|nbme exam driver|exam driver)$/i.test(text)
+    || /\bnbme\s+exam\s+driver\b/i.test(text);
+}
+
+function getAttemptLaunchDefinition(attempt) {
+  const source = isObject(attempt && attempt.source) ? attempt.source : {};
+  return isPlainObject(source.launchDefinition) ? source.launchDefinition : {};
+}
+
+function deriveAttemptStepLabel(attempt) {
+  const identity = isPlainObject(attempt && attempt.examIdentity) ? attempt.examIdentity : {};
+  const scope = isPlainObject(attempt && attempt.launchedScope) ? attempt.launchedScope : {};
+  const launchDefinition = getAttemptLaunchDefinition(attempt);
+  return extractStepLabel([
     identity.program,
-    identity.examName,
+    scope.program,
+    scope.testDefinitionDisplayName,
+    scope.displayName,
     identity.section,
+    launchDefinition.testDefinitionDisplayName,
+    identity.examName,
+  ].join(' ')) || (!isGenericExamPart(identity.program) ? normalizeDisplayText(identity.program) : '');
+}
+
+function deriveAttemptBlockLabel(attempt, options = {}) {
+  const identity = isPlainObject(attempt && attempt.examIdentity) ? attempt.examIdentity : {};
+  const scope = isPlainObject(attempt && attempt.launchedScope) ? attempt.launchedScope : {};
+  const launchDefinition = getAttemptLaunchDefinition(attempt);
+  const metadata = Array.isArray(attempt && attempt.blockMetadata) ? attempt.blockMetadata : [];
+  const displayText = normalizeDisplayText([
+    scope.testDefinitionDisplayName,
+    scope.displayName,
+    launchDefinition.testDefinitionDisplayName,
+    identity.section,
+    metadata.find((block) => normalizeDisplayText(block && block.label))?.label,
+  ].find((value) => normalizeDisplayText(value)) || '');
+  if (options.includeStep && extractStepLabel(displayText) && extractBlockNumber(displayText)) {
+    return displayText;
+  }
+  const explicit = formatBlockLabel(scope.block || scope.selectedBlock || scope.launchedBlock);
+  if (explicit) {
+    return explicit;
+  }
+  const displayBlock = formatBlockLabel(displayText);
+  if (displayBlock) {
+    return displayBlock;
+  }
+  const metadataBlock = metadata.find((block) => coercePositiveInteger(block && (block.blockNumber || block.block || block.index), 0));
+  return metadataBlock ? `Block ${coercePositiveInteger(metadataBlock.blockNumber || metadataBlock.block || metadataBlock.index, 1)}` : '';
+}
+
+function firstSpecificExamName(attempt) {
+  const identity = isPlainObject(attempt && attempt.examIdentity) ? attempt.examIdentity : {};
+  const scope = isPlainObject(attempt && attempt.launchedScope) ? attempt.launchedScope : {};
+  const launchDefinition = getAttemptLaunchDefinition(attempt);
+  return [
+    identity.examName,
     identity.formName,
-  ]);
+    scope.examName,
+    scope.exam,
+    launchDefinition.examDisplayName,
+    launchDefinition.examName,
+  ].map((value) => normalizeDisplayText(value)).find((value) => value && !isGenericExamPart(value) && !extractBlockNumber(value)) || '';
+}
+
+function summarizeAttemptExam(attempt) {
+  const source = isObject(attempt) ? attempt : {};
+  const identity = isPlainObject(source.examIdentity) ? source.examIdentity : {};
+  const step = deriveAttemptStepLabel(source);
+  const examName = firstSpecificExamName(source);
+  const block = deriveAttemptBlockLabel(source);
+  const fallbackParts = uniqueStrings([identity.program, identity.examName, identity.section, identity.formName]).filter((part) => {
+    const text = normalizeDisplayText(part);
+    const stepBlockText = normalizeDisplayText(`${step} ${block}`);
+    return text
+      && !isGenericExamPart(text)
+      && text !== step
+      && text !== examName
+      && text !== block
+      && (!stepBlockText || text !== stepBlockText);
+  });
+  const parts = uniqueStrings([step, examName, block, ...fallbackParts]);
   return parts.length ? parts.join(' · ') : 'Unknown exam';
 }
 
-function summarizeLaunchedScope(scope) {
-  const launchedScope = isPlainObject(scope) ? scope : {};
-  const mode = normalizeString(launchedScope.mode || launchedScope.testMode || launchedScope.scope || launchedScope.launchMode, '');
-  const block = normalizeString(launchedScope.block || launchedScope.selectedBlock || launchedScope.launchedBlock, '');
-  const test = normalizeString(launchedScope.test || launchedScope.exam || launchedScope.section, '');
+function summarizeExamIdentity(examIdentity) {
+  return summarizeAttemptExam({ examIdentity });
+}
+
+function summarizeAttemptScope(attempt) {
+  const scope = isPlainObject(attempt && attempt.launchedScope) ? attempt.launchedScope : {};
+  const mode = normalizeDisplayText(scope.mode || scope.testMode || scope.scope || scope.launchMode);
+  const block = deriveAttemptBlockLabel(attempt, { includeStep: true });
+  const test = normalizeDisplayText(scope.test || scope.exam || scope.section);
   const parts = [];
   if (mode) {
     parts.push(mode);
   }
   if (block) {
-    parts.push(/^block\b/i.test(block) ? block : `Block ${block}`);
+    parts.push(block);
   }
-  if (test && !parts.includes(test)) {
+  if (test && !parts.includes(test) && !isGenericExamPart(test)) {
     parts.push(test);
   }
   return parts.length ? parts.join(' · ') : '—';
+}
+
+function summarizeLaunchedScope(scope) {
+  return summarizeAttemptScope({ launchedScope: scope });
 }
 
 function deriveBlockCount(attempt) {
@@ -302,8 +417,8 @@ function formatHistoryAttemptRow(attempt) {
     id: normalizeString(source.id, ''),
     startedAt,
     date: formatDateTime(startedAt),
-    exam: summarizeExamIdentity(source.examIdentity),
-    launchedScope: summarizeLaunchedScope(source.launchedScope),
+    exam: summarizeAttemptExam(source),
+    launchedScope: summarizeAttemptScope(source),
     blockCount: blockCount > 0 ? String(blockCount) : '—',
     duration: formatDurationMs(deriveAttemptDurationMs(source)),
     score: formatScoreSummary(source.scoreSummary),

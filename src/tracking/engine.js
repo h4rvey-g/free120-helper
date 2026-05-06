@@ -1239,6 +1239,8 @@ async function persistTrackingState(options) {
   const scopedQuestionSet = shouldUseScopedQuestionSet(effectiveAdapterState, effectiveItemList);
   const trackingQuestionIds = mergeTrackingQuestionIds(attempt.questionIds || [], effectiveItemList, effectiveCurrentItem && effectiveCurrentItem.questionId, { replaceWithScopedItems: scopedQuestionSet });
   const qbankCaptureResult = resolveQBankCaptureForItems(options.qbankCaptureContext, {
+    attempt,
+    launchedScope: effectiveAdapterState.launchedScope,
     itemList: effectiveItemList,
     currentItem: effectiveCurrentItem,
     questionIds: trackingQuestionIds,
