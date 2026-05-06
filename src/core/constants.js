@@ -8,6 +8,8 @@ const SCRIPT = Object.freeze({
     'https://orientation.nbme.org/',
     'https://orientation.nbme.org/Launch*',
     'https://orientation.nbme.org/Launch/*',
+    'https://orientation.nbme.org/launch*',
+    'https://orientation.nbme.org/launch/*',
     'https://orientation.nbme.org/webfred*',
     'https://orientation.nbme.org/webfred/*',
     'https://orientation.nbme.org/WebFRED*',

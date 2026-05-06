@@ -1,4 +1,5 @@
 import { SCRIPT, DB_SCHEMA, ATTEMPT_STATUS, EXPORT_TYPES, FULL_BACKUP_WARNING } from '../core/constants.js';
+import { createQBankCacheAttemptId, discoverLaunchQuestionDefinitions } from '../qbank/cache-controller.js';
 import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
 
 const LAUNCH_HISTORY_STYLE_ID = 'f120-launch-history-style';
@@ -225,6 +226,72 @@ function canOpenReviewFromHistory(attempt) {
   return Boolean(attempt.reviewReady)
     || attempt.status === ATTEMPT_STATUS.COMPLETED
     || attempt.status === ATTEMPT_STATUS.PARTIAL;
+}
+
+function isQBankCacheAttempt(attempt) {
+  const id = normalizeString(attempt && attempt.id, '');
+  const source = isObject(attempt && attempt.source) ? attempt.source : {};
+  return id.startsWith('qbank-cache:')
+    || normalizeString(source.cacheKind, '') === 'qbank'
+    || normalizeString(source.createdBy, '') === 'qbank-cache-controller';
+}
+
+function getQBankKnownAnswerCount(attempt) {
+  if (!isObject(attempt)) {
+    return 0;
+  }
+  const summary = isObject(attempt.answerKeyCapture) ? attempt.answerKeyCapture : {};
+  return coerceNonNegativeInteger(summary.knownCount, 0)
+    || Object.keys(isObject(attempt.correctAnswers) ? attempt.correctAnswers : {}).length;
+}
+
+function isQBankAttemptComplete(attempt) {
+  if (!isQBankCacheAttempt(attempt)) {
+    return false;
+  }
+  const questionCount = coerceNonNegativeInteger(attempt.questionCount, Array.isArray(attempt.questionIds) ? attempt.questionIds.length : 0);
+  return attempt.status === ATTEMPT_STATUS.COMPLETED
+    && Boolean(attempt.reviewReady)
+    && questionCount > 0
+    && getQBankKnownAnswerCount(attempt) >= questionCount;
+}
+
+function summarizeQBankCaptureStorage(attempts, definitions = []) {
+  const qbankAttempts = (Array.isArray(attempts) ? attempts : []).filter(isQBankCacheAttempt);
+  const definitionIds = (Array.isArray(definitions) ? definitions : []).map(createQBankCacheAttemptId);
+  const expectedCount = definitionIds.length || qbankAttempts.length;
+  const attemptsById = new Map(qbankAttempts.map((attempt) => [normalizeString(attempt && attempt.id, ''), attempt]));
+  const expectedAttempts = definitionIds.length
+    ? definitionIds.map((id) => attemptsById.get(id)).filter(Boolean)
+    : qbankAttempts;
+  const completeAttempts = expectedAttempts.filter(isQBankAttemptComplete);
+  const storedQuestions = expectedAttempts.reduce((sum, attempt) => sum + coerceNonNegativeInteger(attempt && attempt.questionCount, Array.isArray(attempt && attempt.questionIds) ? attempt.questionIds.length : 0), 0);
+  const knownAnswers = expectedAttempts.reduce((sum, attempt) => sum + getQBankKnownAnswerCount(attempt), 0);
+  const failedAttempts = expectedAttempts.filter((attempt) => attempt && !isQBankAttemptComplete(attempt)).length;
+  return Object.freeze({
+    available: qbankAttempts.length > 0,
+    complete: expectedCount > 0 && completeAttempts.length === expectedCount,
+    expectedCount,
+    storedCount: expectedAttempts.length,
+    completeCount: completeAttempts.length,
+    failedCount: failedAttempts,
+    storedQuestions,
+    knownAnswers,
+    definitionsKnown: definitionIds.length > 0,
+  });
+}
+
+function formatQBankStorageStatus(summary) {
+  if (!summary || !summary.available) {
+    return 'Not captured';
+  }
+  if (summary.complete) {
+    return 'Complete';
+  }
+  if (summary.completeCount > 0) {
+    return 'Partial';
+  }
+  return 'Incomplete';
 }
 
 function formatHistoryAttemptRow(attempt) {
@@ -629,6 +696,48 @@ function injectLaunchHistoryStyles(adapterDocument) {
       font-size: 12px;
       background: #fff;
     }
+    .f120-launch-history__panel--qbank {
+      width: min(560px, calc(100vw - 28px));
+    }
+    .f120-launch-history__qbank-body {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+    }
+    .f120-launch-history__qbank-copy {
+      margin: 0;
+      color: #475569;
+      line-height: 1.5;
+    }
+    .f120-launch-history__qbank-storage {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 6px 10px;
+      padding: 10px;
+      border: 1px solid rgba(15, 23, 42, 0.1);
+      border-radius: 10px;
+      background: #f8fafc;
+    }
+    .f120-launch-history__qbank-storage-label {
+      color: #475569;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+    .f120-launch-history__qbank-storage-value {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      color: #111827;
+    }
+    .f120-launch-history__qbank-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .f120-launch-history__qbank-body .f120-launch-history__message {
+      margin-left: 0;
+      width: 100%;
+    }
     @media (max-width: 680px) {
       #${LAUNCH_HISTORY_ROOT_ID} {
         top: 10px;
@@ -713,6 +822,17 @@ function setMessage(messageElement, message, kind = 'info') {
   messageElement.textContent = text;
 }
 
+function appendDetailRow(adapterDocument, container, label, value) {
+  container.appendChild(createElement(adapterDocument, 'div', {
+    className: 'f120-launch-history__qbank-storage-label',
+    text: label,
+  }));
+  container.appendChild(createElement(adapterDocument, 'div', {
+    className: 'f120-launch-history__qbank-storage-value',
+    text: value,
+  }));
+}
+
 function appendCellText(adapterDocument, row, text, className = '') {
   const cell = createElement(adapterDocument, 'td', className ? { className } : {});
   cell.textContent = normalizeString(text, '—');
@@ -762,7 +882,7 @@ function buildLaunchHistoryDom(adapterDocument) {
     className: 'f120-launch-history__button',
     type: 'button',
     text: 'Capture QBank',
-    attributes: { 'aria-haspopup': 'dialog' },
+    attributes: { 'aria-haspopup': 'dialog', 'aria-expanded': 'false' },
   });
   triggerGroup.append(triggerButton, qbankCaptureButton);
   const backdrop = createElement(adapterDocument, 'div', {
@@ -855,8 +975,48 @@ function buildLaunchHistoryDom(adapterDocument) {
     text: 'Review/export/import open only from local IndexedDB data. Full backup includes stored question snapshots and may contain NBME content.',
   });
 
+  const qbankPanel = createElement(adapterDocument, 'section', {
+    className: 'f120-launch-history__panel f120-launch-history__panel--qbank',
+    hidden: true,
+    attributes: { role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Capture QBank' },
+  });
+  const qbankHeader = createElement(adapterDocument, 'div', { className: 'f120-launch-history__header' });
+  const qbankTitleWrap = createElement(adapterDocument, 'div');
+  const qbankTitle = createElement(adapterDocument, 'h2', {
+    className: 'f120-launch-history__title',
+    text: 'Capture QBank',
+  });
+  const qbankSubtitle = createElement(adapterDocument, 'p', {
+    className: 'f120-launch-history__subtitle',
+    text: 'Capture all available NBME/Free120 MCQ blocks into local IndexedDB.',
+  });
+  qbankTitleWrap.append(qbankTitle, qbankSubtitle);
+  const qbankCloseButton = createActionButton(adapterDocument, '×', 'close-qbank', 'f120-launch-history__action--ghost');
+  qbankCloseButton.setAttribute('aria-label', 'Close Capture QBank');
+  qbankHeader.append(qbankTitleWrap, qbankCloseButton);
+
+  const qbankBody = createElement(adapterDocument, 'div', { className: 'f120-launch-history__qbank-body' });
+  qbankBody.appendChild(createElement(adapterDocument, 'p', {
+    className: 'f120-launch-history__qbank-copy',
+    text: 'This creates local review-ready cache attempts with rendered question snapshots and answer keys. Keep stored question content private. Do not export or share full backups.',
+  }));
+  const qbankStorage = createElement(adapterDocument, 'div', {
+    className: 'f120-launch-history__qbank-storage',
+    attributes: { role: 'status', 'aria-live': 'polite' },
+  });
+  const qbankActions = createElement(adapterDocument, 'div', { className: 'f120-launch-history__qbank-actions' });
+  const qbankStartButton = createActionButton(adapterDocument, 'Start QBank capture', 'start-qbank-capture', 'f120-launch-history__action--primary');
+  qbankActions.append(qbankStartButton);
+  const qbankMessage = createElement(adapterDocument, 'div', {
+    className: 'f120-launch-history__message',
+    hidden: true,
+    attributes: { role: 'status' },
+  });
+  qbankBody.append(qbankStorage, qbankActions, qbankMessage);
+  qbankPanel.append(qbankHeader, qbankBody);
+
   panel.append(header, toolbar, body, footer);
-  root.append(triggerGroup, backdrop, panel);
+  root.append(triggerGroup, backdrop, panel, qbankPanel);
 
   return Object.freeze({
     root,
@@ -864,13 +1024,18 @@ function buildLaunchHistoryDom(adapterDocument) {
     qbankCaptureButton,
     backdrop,
     panel,
+    qbankPanel,
     closeButton,
+    qbankCloseButton,
+    qbankStartButton,
+    qbankStorage,
     refreshButton,
     exportHistoryButton,
     exportFullButton,
     importModeSelect,
     importInput,
     message,
+    qbankMessage,
     tableWrap,
     tbody,
     empty,
@@ -891,7 +1056,9 @@ function createLaunchHistory(options = {}) {
 
   let destroyed = false;
   let panelOpen = false;
+  let qbankPanelOpen = false;
   let attempts = [];
+  let qbankStorageSummary = summarizeQBankCaptureStorage([]);
   let refreshRequestId = 0;
   let qbankCaptureInProgress = false;
 
@@ -907,6 +1074,7 @@ function createLaunchHistory(options = {}) {
       dom.importModeSelect,
       dom.importInput,
       dom.qbankCaptureButton,
+      dom.qbankStartButton,
     ].forEach((element) => {
       if (element) {
         element.disabled = disabled;
@@ -919,16 +1087,68 @@ function createLaunchHistory(options = {}) {
     return attempts.find((attempt) => attempt && attempt.id === id) || null;
   }
 
+  function renderQBankStorageSummary(summary = qbankStorageSummary) {
+    removeChildren(dom.qbankStorage);
+    appendDetailRow(adapterDocument, dom.qbankStorage, 'Status', formatQBankStorageStatus(summary));
+    appendDetailRow(adapterDocument, dom.qbankStorage, 'Blocks', summary.expectedCount > 0 ? `${summary.completeCount}/${summary.expectedCount} complete` : `${summary.storedCount} stored`);
+    appendDetailRow(adapterDocument, dom.qbankStorage, 'Questions', String(summary.storedQuestions));
+    appendDetailRow(adapterDocument, dom.qbankStorage, 'Answer keys', String(summary.knownAnswers));
+  }
+
+  function readLaunchQBankDefinitions() {
+    try {
+      return discoverLaunchQuestionDefinitions(adapterWindow, adapterDocument).definitions;
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  async function refreshQBankStorageSummary(sourceAttempts = attempts) {
+    const listed = Array.isArray(sourceAttempts) && sourceAttempts.length
+      ? sourceAttempts
+      : await storage.listAttempts({ includeInProgress: true });
+    qbankStorageSummary = summarizeQBankCaptureStorage(listed, readLaunchQBankDefinitions());
+    renderQBankStorageSummary(qbankStorageSummary);
+    return qbankStorageSummary;
+  }
+
+  function updateOpenState() {
+    const anyOpen = panelOpen || qbankPanelOpen;
+    dom.panel.hidden = !panelOpen;
+    dom.qbankPanel.hidden = !qbankPanelOpen;
+    dom.backdrop.hidden = !anyOpen;
+    dom.triggerButton.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
+    dom.qbankCaptureButton.setAttribute('aria-expanded', qbankPanelOpen ? 'true' : 'false');
+  }
+
   function setOpen(open) {
     if (destroyed) {
       return;
     }
     panelOpen = Boolean(open);
-    dom.panel.hidden = !panelOpen;
-    dom.backdrop.hidden = !panelOpen;
-    dom.triggerButton.setAttribute('aria-expanded', panelOpen ? 'true' : 'false');
+    if (panelOpen) {
+      qbankPanelOpen = false;
+    }
+    updateOpenState();
     if (panelOpen) {
       void refreshAttempts();
+    }
+  }
+
+  function setQBankOpen(open) {
+    if (destroyed) {
+      return;
+    }
+    qbankPanelOpen = Boolean(open);
+    if (qbankPanelOpen) {
+      panelOpen = false;
+    }
+    updateOpenState();
+    if (qbankPanelOpen) {
+      void refreshQBankStorageSummary().catch((error) => {
+        logger.warn('QBank storage summary refresh failed.', error);
+        setMessage(dom.qbankMessage, `QBank storage refresh failed: ${normalizeString(error && error.message, 'unknown error')}`, 'error');
+      });
     }
   }
 
@@ -940,8 +1160,29 @@ function createLaunchHistory(options = {}) {
     setOpen(false);
   }
 
+  function openQBankPanel() {
+    setQBankOpen(true);
+  }
+
+  function closeQBankPanel() {
+    setQBankOpen(false);
+  }
+
+  function closeAllPanels() {
+    if (destroyed) {
+      return;
+    }
+    panelOpen = false;
+    qbankPanelOpen = false;
+    updateOpenState();
+  }
+
   function togglePanel() {
     setOpen(!panelOpen);
+  }
+
+  function toggleQBankPanel() {
+    setQBankOpen(!qbankPanelOpen);
   }
 
   function renderAttempts() {
@@ -1004,6 +1245,8 @@ function createLaunchHistory(options = {}) {
       }
       attempts = Array.isArray(listed) ? listed : [];
       renderAttempts();
+      qbankStorageSummary = summarizeQBankCaptureStorage(attempts, readLaunchQBankDefinitions());
+      renderQBankStorageSummary(qbankStorageSummary);
       setMessage(dom.message, attempts.length ? `${attempts.length} attempts loaded.` : 'No attempts stored yet.', attempts.length ? 'info' : 'warning');
       return attempts;
     } catch (error) {
@@ -1125,22 +1368,32 @@ function createLaunchHistory(options = {}) {
   }
 
   async function captureQBank() {
-    setOpen(true);
+    setQBankOpen(true);
     if (!qbankCache || typeof qbankCache.captureAllAvailable !== 'function') {
-      setMessage(dom.message, 'QBank capture unavailable on this page.', 'error');
+      setMessage(dom.qbankMessage, 'QBank capture unavailable on this page.', 'error');
       return null;
     }
-    const warning = [
-      'Capture all available NBME/Free120 MCQ blocks into local IndexedDB?',
-      '',
-      'This creates local review-ready cache attempts with rendered question snapshots and answer keys.',
-      'Keep stored question content private. Do not export or share full backups.',
-      '',
-      'Continue?',
-    ].join('\n');
+    const summary = await refreshQBankStorageSummary();
+    const warning = summary.complete
+      ? [
+        'QBank capture already appears complete in local storage.',
+        '',
+        `${summary.completeCount}/${summary.expectedCount} blocks complete, ${summary.storedQuestions} questions, ${summary.knownAnswers} answer keys.`,
+        'Capturing again is unnecessary and will replace existing QBank cache attempts.',
+        '',
+        'Continue anyway?',
+      ].join('\n')
+      : [
+        'Capture all available NBME/Free120 MCQ blocks into local IndexedDB?',
+        '',
+        'This creates local review-ready cache attempts with rendered question snapshots and answer keys.',
+        'Keep stored question content private. Do not export or share full backups.',
+        '',
+        'Continue?',
+      ].join('\n');
     const confirmed = typeof adapterWindow.confirm === 'function' ? adapterWindow.confirm(warning) : false;
     if (!confirmed) {
-      setMessage(dom.message, 'QBank capture cancelled.', 'info');
+      setMessage(dom.qbankMessage, 'QBank capture cancelled.', 'info');
       return null;
     }
     qbankCaptureInProgress = true;
@@ -1151,7 +1404,7 @@ function createLaunchHistory(options = {}) {
           const current = coerceNonNegativeInteger(progress && progress.current, 0);
           const total = coerceNonNegativeInteger(progress && progress.total, 0);
           const label = normalizeString(progress && progress.definition && progress.definition.testDefinitionDisplayName, 'block');
-          setMessage(dom.message, `Capturing QBank ${current}/${total}: ${label}…`, 'info');
+          setMessage(dom.qbankMessage, `Capturing QBank ${current}/${total}: ${label}…`, 'info');
         },
       });
       const captured = coerceNonNegativeInteger(result && result.capturedDefinitions, 0);
@@ -1159,12 +1412,13 @@ function createLaunchHistory(options = {}) {
       const questions = coerceNonNegativeInteger(result && result.questionCount, 0);
       const knownAnswers = coerceNonNegativeInteger(result && result.knownAnswerCount, 0);
       const kind = failed ? (captured ? 'warning' : 'error') : 'success';
-      setMessage(dom.message, `QBank capture ${failed ? 'partial' : 'complete'}: ${captured} blocks, ${questions} questions, ${knownAnswers} answer keys${failed ? `, ${failed} failed` : ''}.`, kind);
+      setMessage(dom.qbankMessage, `QBank capture ${failed ? 'partial' : 'complete'}: ${captured} blocks, ${questions} questions, ${knownAnswers} answer keys${failed ? `, ${failed} failed` : ''}.`, kind);
       await refreshAttempts();
+      await refreshQBankStorageSummary();
       return result;
     } catch (error) {
       logger.warn('QBank capture failed.', error);
-      setMessage(dom.message, `QBank capture failed: ${normalizeString(error && error.message, 'unknown error')}`, 'error');
+      setMessage(dom.qbankMessage, `QBank capture failed: ${normalizeString(error && error.message, 'unknown error')}`, 'error');
       return null;
     } finally {
       qbankCaptureInProgress = false;
@@ -1261,6 +1515,21 @@ function createLaunchHistory(options = {}) {
     }
   }
 
+  function handleQBankPanelClick(event) {
+    const actionElement = findActionTarget(event);
+    if (!actionElement) {
+      return;
+    }
+    const action = normalizeString(actionElement.dataset.action, '');
+    if (action === 'close-qbank') {
+      closeQBankPanel();
+      return;
+    }
+    if (action === 'start-qbank-capture') {
+      void captureQBank();
+    }
+  }
+
   function handleImportChange(event) {
     const file = event && event.target && event.target.files ? event.target.files[0] : null;
     if (file) {
@@ -1269,22 +1538,24 @@ function createLaunchHistory(options = {}) {
   }
 
   function handleBackdropClick() {
-    closePanel();
+    closeAllPanels();
   }
 
   function handleKeyDown(event) {
-    if (event && event.key === 'Escape' && panelOpen) {
-      closePanel();
+    if (event && event.key === 'Escape' && (panelOpen || qbankPanelOpen)) {
+      closeAllPanels();
     }
   }
 
   function attach() {
     const target = adapterDocument.body || adapterDocument.documentElement;
     target.appendChild(dom.root);
+    renderQBankStorageSummary();
     dom.triggerButton.addEventListener('click', togglePanel);
-    dom.qbankCaptureButton.addEventListener('click', captureQBank);
+    dom.qbankCaptureButton.addEventListener('click', toggleQBankPanel);
     dom.backdrop.addEventListener('click', handleBackdropClick);
     dom.panel.addEventListener('click', handlePanelClick);
+    dom.qbankPanel.addEventListener('click', handleQBankPanelClick);
     dom.importInput.addEventListener('change', handleImportChange);
     adapterDocument.addEventListener('keydown', handleKeyDown, true);
     void refreshAttempts().catch(() => {});
@@ -1296,9 +1567,10 @@ function createLaunchHistory(options = {}) {
     }
     destroyed = true;
     dom.triggerButton.removeEventListener('click', togglePanel);
-    dom.qbankCaptureButton.removeEventListener('click', captureQBank);
+    dom.qbankCaptureButton.removeEventListener('click', toggleQBankPanel);
     dom.backdrop.removeEventListener('click', handleBackdropClick);
     dom.panel.removeEventListener('click', handlePanelClick);
+    dom.qbankPanel.removeEventListener('click', handleQBankPanelClick);
     dom.importInput.removeEventListener('change', handleImportChange);
     adapterDocument.removeEventListener('keydown', handleKeyDown, true);
     if (dom.root.parentNode) {
@@ -1311,6 +1583,8 @@ function createLaunchHistory(options = {}) {
   return Object.freeze({
     open: openPanel,
     close: closePanel,
+    openQBank: openQBankPanel,
+    closeQBank: closeQBankPanel,
     refresh: refreshAttempts,
     destroy,
     exportHistoryOnly,
@@ -1320,6 +1594,7 @@ function createLaunchHistory(options = {}) {
     getState() {
       return Object.freeze({
         open: panelOpen,
+        qbankOpen: qbankPanelOpen,
         attempts: attempts.slice(),
       });
     },
@@ -1332,5 +1607,7 @@ export {
   IMPORT_REPLACE_WARNING,
   formatHistoryAttemptRow,
   canOpenReviewFromHistory,
+  summarizeQBankCaptureStorage,
+  formatQBankStorageStatus,
   createLaunchHistory,
 };

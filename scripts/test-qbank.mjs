@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createQBankCacheAttemptId, isQuestionBlockDefinition, QBANK_CACHE_ATTEMPT_PREFIX } from '../src/qbank/cache-controller.js';
 import { loadQBankCaptureContext, resolveQBankCaptureForItems, loadQBankSnapshotsForAttempt } from '../src/qbank/cache-lookup.js';
+import { formatQBankStorageStatus, summarizeQBankCaptureStorage } from '../src/ui/launch-history.js';
 
 assert.equal(QBANK_CACHE_ATTEMPT_PREFIX, 'qbank-cache');
 assert.equal(isQuestionBlockDefinition({ displayName: 'Step 1 Block 1' }), true);
@@ -14,6 +15,37 @@ assert.equal(createQBankCacheAttemptId({
   examName: 'STPF1',
   testDefinitionName: 'STPF1C0137',
 }), 'qbank-cache:USMLE:STPF1:STPF1C0137');
+
+const qbankStorageSummary = summarizeQBankCaptureStorage([
+  Object.freeze({
+    id: 'qbank-cache:USMLE:STPF1:STPF1C0137',
+    status: 'completed',
+    reviewReady: true,
+    questionIds: Object.freeze(['cache-q1', 'cache-q2']),
+    questionCount: 2,
+    correctAnswers: Object.freeze({ 'cache-q1': 'A', 'cache-q2': 'B' }),
+    source: Object.freeze({ cacheKind: 'qbank' }),
+  }),
+], [Object.freeze({ program: 'USMLE', examName: 'STPF1', testDefinitionName: 'STPF1C0137' })]);
+assert.equal(qbankStorageSummary.complete, true);
+assert.equal(qbankStorageSummary.completeCount, 1);
+assert.equal(qbankStorageSummary.expectedCount, 1);
+assert.equal(qbankStorageSummary.storedQuestions, 2);
+assert.equal(qbankStorageSummary.knownAnswers, 2);
+assert.equal(formatQBankStorageStatus(qbankStorageSummary), 'Complete');
+const incompleteQBankStorageSummary = summarizeQBankCaptureStorage([
+  Object.freeze({
+    id: 'qbank-cache:USMLE:STPF1:STPF1C0137',
+    status: 'completed',
+    reviewReady: true,
+    questionIds: Object.freeze(['cache-q1', 'cache-q2']),
+    questionCount: 2,
+    correctAnswers: Object.freeze({ 'cache-q1': 'A' }),
+    source: Object.freeze({ cacheKind: 'qbank' }),
+  }),
+], [Object.freeze({ program: 'USMLE', examName: 'STPF1', testDefinitionName: 'STPF1C0137' })]);
+assert.equal(incompleteQBankStorageSummary.complete, false);
+assert.equal(formatQBankStorageStatus(incompleteQBankStorageSummary), 'Incomplete');
 
 const qbankAttempt = Object.freeze({
   id: 'qbank-cache:USMLE:STPF1:Block1',

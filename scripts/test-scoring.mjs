@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { ATTEMPT_STATUS } from '../src/core/constants.js';
+import { ATTEMPT_STATUS, PAGE_KIND, SCRIPT } from '../src/core/constants.js';
 import {
   GRADE_STATUS,
   answersMatch,
@@ -19,11 +19,16 @@ import {
   isEndExamRoute,
   pickLatestEndExamAttempt,
 } from '../src/ui/active-exam-pill.js';
+import { detectRuntimeContext } from '../src/core/runtime-context.js';
 import { createSyntheticAdapterState, createSyntheticAttempt } from './test-utils/fixtures.mjs';
 
 assert.equal(normalizeAnswerId(' A '), 'A');
 assert.equal(answersMatch('a', 'A'), true);
 assert.equal(answersMatch('', 'A'), false);
+assert.equal(detectRuntimeContext(new URL('https://orientation.nbme.org/launch/usmle')).pageKind, PAGE_KIND.LAUNCH);
+assert.equal(detectRuntimeContext(new URL('https://orientation.nbme.org/Launch/USMLE')).pageKind, PAGE_KIND.LAUNCH);
+assert.equal(SCRIPT.USER_SCRIPT_MATCHES.includes('https://orientation.nbme.org/launch*'), true);
+assert.equal(SCRIPT.USER_SCRIPT_MATCHES.includes('https://orientation.nbme.org/launch/*'), true);
 
 const attempt = createSyntheticAttempt({
   id: 'attempt-scoring',

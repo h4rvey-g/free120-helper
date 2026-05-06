@@ -520,42 +520,29 @@ function injectActiveExamPillStyles(adapterDocument) {
       display: none !important;
     }
     #f120-end-exam-review-cta {
-      position: fixed;
-      right: 12px;
-      bottom: 12px;
-      z-index: ${SCRIPT.UI_Z_INDEX.PILL};
+      display: block;
       pointer-events: auto;
-      max-width: min(360px, calc(100vw - 24px));
-      padding: 12px;
-      border: 1px solid rgba(37, 99, 235, 0.24);
-      border-radius: 14px;
-      background: rgba(255, 255, 255, 0.98);
-      box-shadow: 0 18px 44px rgba(15, 23, 42, 0.22);
+      max-width: max-content;
+      margin: 12px 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
       color: #111827;
     }
     #f120-end-exam-review-cta[hidden] {
       display: none !important;
     }
-    .f120-end-exam-review-cta__title {
-      margin: 0 0 4px;
-      font-size: 14px;
-      font-weight: 800;
-    }
-    .f120-end-exam-review-cta__text {
-      margin: 0 0 10px;
-      color: #475569;
-      font-size: 12px;
-    }
     .f120-end-exam-review-cta__button {
-      width: 100%;
+      width: auto;
       border: 1px solid #1d4ed8;
-      border-radius: 10px;
+      border-radius: 6px;
       background: #2563eb;
       color: #fff;
       cursor: pointer;
       font: inherit;
       font-weight: 800;
-      padding: 9px 12px;
+      padding: 7px 10px;
     }
     .f120-end-exam-review-cta__button:hover:not(:disabled) {
       background: #1d4ed8;
@@ -770,22 +757,41 @@ function buildEndExamReviewCtaDom(adapterDocument) {
     hidden: true,
     attributes: { 'data-free120-helper': 'end-exam-review-cta', role: 'complementary', 'aria-label': 'Free120 Helper review mode' },
   });
-  const title = createElement(adapterDocument, 'p', {
-    className: 'f120-end-exam-review-cta__title',
-    text: 'Exam ended',
-  });
-  const text = createElement(adapterDocument, 'p', {
-    className: 'f120-end-exam-review-cta__text',
-    text: END_EXAM_REVIEW_LOCKED_MESSAGE,
-  });
   const button = createElement(adapterDocument, 'button', {
     className: 'f120-end-exam-review-cta__button',
     type: 'button',
-    text: 'Go to review mode',
+    text: 'Review mode',
   });
 
-  root.append(title, text, button);
-  return Object.freeze({ root, title, text, button });
+  root.append(button);
+  return Object.freeze({ root, button });
+}
+
+function isLaunchCloseLink(element, adapterWindow) {
+  if (!element || String(element.tagName || '').toLowerCase() !== 'a') {
+    return false;
+  }
+  if (!/^close$/i.test(normalizeString(element.textContent, ''))) {
+    return false;
+  }
+  const rawHref = normalizeString(typeof element.getAttribute === 'function' ? element.getAttribute('href') : element.href, '');
+  if (!rawHref) {
+    return false;
+  }
+  try {
+    const baseHref = normalizeString(adapterWindow && adapterWindow.location && adapterWindow.location.href, SCRIPT.ORIGIN);
+    const url = new URL(rawHref, baseHref);
+    return url.origin === SCRIPT.ORIGIN && /^\/launch(?:\/|$)/i.test(url.pathname || '');
+  } catch (_error) {
+    return /orientation\.nbme\.org\/launch(?:\/|$)/i.test(rawHref);
+  }
+}
+
+function findEndExamCloseLink(adapterDocument, adapterWindow) {
+  if (!adapterDocument || typeof adapterDocument.querySelectorAll !== 'function') {
+    return null;
+  }
+  return Array.from(adapterDocument.querySelectorAll('a[href]')).find((element) => isLaunchCloseLink(element, adapterWindow)) || null;
 }
 
 
@@ -911,14 +917,26 @@ function createActiveExamPill(options = {}) {
     dom.root.classList.toggle('f120-active-exam-pill--hidden', !visible && !panelOpen);
   }
 
+  function placeEndExamReviewCta() {
+    const target = adapterDocument.body || adapterDocument.documentElement;
+    const closeLink = findEndExamCloseLink(adapterDocument, adapterWindow);
+    if (closeLink && closeLink.parentNode) {
+      if (endExamCta.root.parentNode !== closeLink.parentNode || endExamCta.root.nextSibling !== closeLink) {
+        closeLink.parentNode.insertBefore(endExamCta.root, closeLink);
+      }
+      return;
+    }
+    if (target && !endExamCta.root.parentNode) {
+      target.appendChild(endExamCta.root);
+    }
+  }
+
   function applyEndExamReviewCta(snapshot) {
     const state = snapshot.endExamReview || deriveEndExamReviewState({ attempt: snapshot.attempt, adapterState: snapshot.adapterState, window: adapterWindow, location: adapterWindow.location });
+    placeEndExamReviewCta();
     endExamCta.root.hidden = !state.visible;
     endExamCta.button.disabled = !state.enabled;
     endExamCta.button.setAttribute('aria-disabled', state.enabled ? 'false' : 'true');
-    endExamCta.text.textContent = state.enabled
-      ? 'Your local review is ready. Open review mode in a new tab.'
-      : (snapshot.attempt && !state.reviewEvidence ? 'No captured helper questions found for this exam attempt.' : (snapshot.attempt ? END_EXAM_REVIEW_LOCKED_MESSAGE : 'No local helper attempt found for this exam.'));
   }
 
   function refresh() {
@@ -1053,7 +1071,7 @@ function createActiveExamPill(options = {}) {
   function attach() {
     const target = adapterDocument.body || adapterDocument.documentElement;
     target.appendChild(dom.root);
-    target.appendChild(endExamCta.root);
+    placeEndExamReviewCta();
     dom.pillButton.addEventListener('click', togglePanel);
     dom.settingsButton.addEventListener('click', togglePanel);
     dom.visibleInput.addEventListener('change', handleVisibleSettingChange);
