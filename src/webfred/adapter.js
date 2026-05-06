@@ -1103,6 +1103,63 @@ function normalizeItemListFromAngular(rawList, options = {}) {
   }));
 }
 
+function getRawAngularItemBlockNumber(rawItem) {
+  if (!isReadableObject(rawItem)) {
+    return 0;
+  }
+  return coercePositiveInteger(
+    readCandidateProperty(rawItem, ['blockNumber', 'block', 'blockIndex', 'currentBlock', 'sectionNumber']),
+    0
+  );
+}
+
+function selectAngularItemsForCurrentBlock(rawList, currentBlock, domState = null) {
+  const rawItems = valueToArray(rawList);
+  if (!rawItems.length) {
+    return [];
+  }
+  const blockNumber = coercePositiveInteger(currentBlock || (domState && domState.currentBlock), 0);
+  if (!blockNumber) {
+    return rawItems;
+  }
+
+  const currentBlockItems = rawItems.filter((item) => getRawAngularItemBlockNumber(item) === blockNumber);
+  if (currentBlockItems.length) {
+    return currentBlockItems;
+  }
+
+  const domItemCount = coercePositiveInteger(domState && domState.itemCount, 0);
+  if (domItemCount > 0 && rawItems.length > domItemCount) {
+    const startIndex = (blockNumber - 1) * domItemCount;
+    if (startIndex >= 0 && startIndex < rawItems.length) {
+      return rawItems.slice(startIndex, startIndex + domItemCount);
+    }
+    return rawItems.slice(0, domItemCount);
+  }
+
+  return rawItems;
+}
+
+function rebaseAngularItemsForCurrentBlock(itemList, currentBlock = 0) {
+  const items = Array.isArray(itemList) ? itemList : [];
+  if (!items.length) {
+    return [];
+  }
+  const blockNumber = coercePositiveInteger(currentBlock, 0);
+  const indexes = items.map((item) => coercePositiveInteger(item && item.itemIndex, 0)).filter(Boolean);
+  const maxIndex = indexes.length ? Math.max(...indexes) : 0;
+  const minIndex = indexes.length ? Math.min(...indexes) : 0;
+  const shouldRebaseIndex = minIndex > 1 && maxIndex > items.length;
+  if (!blockNumber && !shouldRebaseIndex) {
+    return items;
+  }
+  return items.map((item, index) => Object.freeze({
+    ...item,
+    blockNumber: blockNumber || item.blockNumber,
+    itemIndex: shouldRebaseIndex ? index + 1 : item.itemIndex,
+  }));
+}
+
 function addAnswerMapping(answers, questionId, answerId) {
   const normalizedQuestionId = normalizeString(questionId, '');
   const normalizedAnswerId = normalizeString(answerId, '');
@@ -1416,26 +1473,27 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
   const examIdentity = normalizeExamIdentityFromAngular(roots, fallbackExamIdentity);
   const launchedScope = normalizeLaunchedScopeFromAngular(roots, domState && domState.launchedScope);
   const currentBlock = coercePositiveInteger(
-    findFirstSemanticValue(roots, ['currentBlock', 'blockNumber', 'activeBlock', 'selectedBlock'], { maxDepth: 3 }),
-    domState && domState.currentBlock ? domState.currentBlock : 0
+    domState && domState.currentBlock,
+    coercePositiveInteger(findFirstSemanticValue(roots, ['currentBlock', 'blockNumber', 'activeBlock', 'selectedBlock'], { maxDepth: 3 }), 0)
   );
   const blockCount = coercePositiveInteger(
-    findFirstSemanticValue(roots, ['blockCount', 'numberOfBlocks', 'totalBlocks', 'blocksCount'], { maxDepth: 3 }),
-    domState && domState.blockCount ? domState.blockCount : 0
+    domState && domState.blockCount,
+    coercePositiveInteger(findFirstSemanticValue(roots, ['blockCount', 'numberOfBlocks', 'totalBlocks', 'blocksCount'], { maxDepth: 3 }), 0)
   );
   const itemCount = coercePositiveInteger(
-    findFirstSemanticValue(roots, ['itemCount', 'questionCount', 'itemsCount', 'totalItems', 'totalQuestions'], { maxDepth: 3 }),
-    domState && domState.itemCount ? domState.itemCount : 0
+    domState && domState.itemCount,
+    coercePositiveInteger(findFirstSemanticValue(roots, ['itemCount', 'questionCount', 'itemsCount', 'totalItems', 'totalQuestions'], { maxDepth: 3 }), 0)
   );
 
   const rawItemList = findFirstSemanticValue(roots, ['itemList', 'items', 'questions', 'questionList', 'testItems'], { maxDepth: 3 });
   const rawCurrentItem = findFirstSemanticValue(roots, ['currentItem', 'activeItem', 'selectedItem', 'item', 'currentQuestion'], { maxDepth: 3 });
   const fallbackItem = domState && domState.currentItem ? domState.currentItem : null;
-  const itemList = normalizeItemListFromAngular(rawItemList, {
+  const scopedRawItemList = selectAngularItemsForCurrentBlock(rawItemList, currentBlock, domState);
+  const itemList = rebaseAngularItemsForCurrentBlock(normalizeItemListFromAngular(scopedRawItemList, {
     examIdentity,
     blockNumber: currentBlock || (fallbackItem && fallbackItem.blockNumber) || 1,
     fallbackItem,
-  });
+  }), currentBlock || (fallbackItem && fallbackItem.blockNumber) || 0);
   let currentItem = isReadableObject(rawCurrentItem)
     ? normalizeAngularItem(rawCurrentItem, {
         examIdentity,
@@ -1444,6 +1502,22 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
         fallback: fallbackItem,
       })
     : null;
+
+  if (currentItem && itemList.length) {
+    const matchedItem = itemList.find((item) => (
+      (currentItem.questionId && item.questionId === currentItem.questionId)
+        || (currentItem.componentId && item.componentId === currentItem.componentId)
+        || (currentItem.medleyId && item.medleyId === currentItem.medleyId && item.itemIndex === currentItem.itemIndex)
+    ));
+    if (matchedItem) {
+      currentItem = Object.freeze({
+        ...currentItem,
+        blockNumber: matchedItem.blockNumber,
+        itemIndex: matchedItem.itemIndex,
+        current: true,
+      });
+    }
+  }
 
   if ((!currentItem || currentItem.identitySource !== 'component-medley') && itemList.length) {
     const currentFromList = itemList.find((item) => item.current)
@@ -1464,7 +1538,8 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
   const angularContent = normalizeCurrentContentFromAngular(rawContent, currentItem);
   const currentContent = angularContent || (domState && domState.currentContent) || null;
   const rawBlocks = findFirstSemanticValue(roots, ['blocks', 'blockList', 'sections', 'blockMetadata'], { maxDepth: 3 });
-  const blockMetadata = normalizeBlockMetadataFromAngular(rawBlocks, currentBlock, blockCount, itemCount || itemList.length);
+  const shouldTrustDomBlock = Boolean((domState && domState.currentBlock) || itemList.length || (domState && domState.itemCount));
+  const blockMetadata = normalizeBlockMetadataFromAngular(shouldTrustDomBlock ? [] : rawBlocks, currentBlock, blockCount, itemList.length || (domState && domState.itemCount) || itemCount);
   const terminalState = extractTerminalStateFromAngular(roots, currentBlock, blockCount, domState && domState.terminalState);
 
   return Object.freeze({
@@ -1473,7 +1548,7 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
     launchedScope,
     currentBlock: currentBlock || (currentItem && currentItem.blockNumber) || 0,
     blockCount,
-    itemCount: itemCount || itemList.length || (domState && domState.itemCount) || 0,
+    itemCount: itemList.length || (domState && domState.itemCount) || itemCount || 0,
     currentItem,
     itemList,
     answers,

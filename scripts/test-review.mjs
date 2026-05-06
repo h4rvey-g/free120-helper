@@ -140,4 +140,111 @@ const fallbackKeyModel = buildReviewModel({
 }, [Object.freeze({ questionId: 'q-fallback', correctAnswerId: 'A' })]);
 assert.equal(fallbackKeyModel.questions[0].status, 'correct');
 
+const validReviewQuestionIds = Array.from({ length: 40 }, (_item, index) => `valid-q${index + 1}`);
+const noisyAttempt = Object.freeze({
+  id: 'attempt-noisy-review',
+  status: ATTEMPT_STATUS.COMPLETED,
+  questionIds: Object.freeze(validReviewQuestionIds),
+  questionCount: 40,
+  responses: Object.freeze(Object.fromEntries(validReviewQuestionIds.slice(0, 10).map((questionId) => [questionId, 'A']))),
+  correctAnswers: Object.freeze(Object.fromEntries(validReviewQuestionIds.map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries(validReviewQuestionIds.map((questionId, index) => [questionId, Object.freeze({
+      questionId,
+      blockNumber: 1,
+      itemIndex: index + 1,
+      componentId: `valid-component-${index + 1}`,
+      medleyId: `valid-medley-${index + 1}`,
+    })]))),
+  }),
+  scoreSummary: Object.freeze({
+    questionResults: Object.freeze([
+      ...validReviewQuestionIds.map((questionId, index) => Object.freeze({
+        questionId,
+        blockNumber: 1,
+        itemIndex: index + 1,
+        componentId: `valid-component-${index + 1}`,
+        medleyId: `valid-medley-${index + 1}`,
+        selectedAnswerId: index < 10 ? 'A' : '',
+        correctAnswerId: 'A',
+        status: index < 10 ? 'correct' : 'omitted',
+      })),
+      ...Array.from({ length: 5 }, (_item, index) => Object.freeze({
+        questionId: `invalid-score-only-${index + 1}`,
+        blockNumber: 1,
+        itemIndex: 41 + index,
+        selectedAnswerId: '',
+        correctAnswerId: 'A',
+        status: 'omitted',
+      })),
+    ]),
+  }),
+});
+const noisySnapshots = Object.freeze([
+  ...validReviewQuestionIds.slice(0, 3).map((questionId, index) => Object.freeze({
+    attemptId: noisyAttempt.id,
+    questionId,
+    blockNumber: 1,
+    itemIndex: index + 1,
+    renderedHtml: `<div id="valid-${index + 1}"><ol class="options"></ol></div>`,
+    metadata: Object.freeze({ componentId: `valid-component-${index + 1}`, medleyId: `valid-medley-${index + 1}` }),
+  })),
+  Object.freeze({
+    attemptId: noisyAttempt.id,
+    questionId: 'duplicate-position-ghost',
+    blockNumber: 1,
+    itemIndex: 1,
+    renderedHtml: '<div id="ghost"><ol class="options"></ol></div>',
+    metadata: Object.freeze({ componentId: 'ghost-component', medleyId: 'ghost-medley' }),
+  }),
+]);
+const noisyModel = buildReviewModel(noisyAttempt, noisySnapshots);
+assert.equal(noisyModel.questions.length, 40, 'review ignores score-only ghosts and duplicate-position snapshots');
+assert.equal(new Set(noisyModel.questions.map((question) => question.questionId)).size, 40, 'review question ids remain unique');
+assert.deepEqual(noisyModel.questions.map((question) => question.questionId), validReviewQuestionIds);
+assert.equal(noisyModel.scoreSummary.total, 40, 'review score summary is rebuilt from filtered questions');
+assert.equal(noisyModel.scoreSummary.correct, 10);
+assert.equal(noisyModel.scoreSummary.omitted, 30);
+assert.equal(noisyModel.questions.some((question) => question.questionId === 'duplicate-position-ghost'), false);
+assert.equal(noisyModel.questions.some((question) => question.questionId.startsWith('invalid-score-only-')), false);
+
+const reportedBlockCounts = [
+  [1, 3],
+  [4, 38],
+  [5, 1],
+  [7, 1],
+  [9, 40],
+];
+const reportedQuestionIds = reportedBlockCounts.flatMap(([blockNumber, count]) => Array.from({ length: count }, (_item, index) => `reported-b${blockNumber}-q${index + 1}`));
+const reportedNoisyAttempt = Object.freeze({
+  id: 'attempt-reported-block-noise',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+  questionIds: Object.freeze(reportedQuestionIds),
+  questionCount: reportedQuestionIds.length,
+  responses: Object.freeze({
+    'reported-b4-q1': 'A',
+    'reported-b9-q1': 'A',
+    'reported-b9-q2': 'A',
+    'reported-b9-q3': 'A',
+  }),
+  correctAnswers: Object.freeze(Object.fromEntries(reportedQuestionIds.map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries(reportedBlockCounts.flatMap(([blockNumber, count]) => (
+      Array.from({ length: count }, (_item, index) => [`reported-b${blockNumber}-q${index + 1}`, Object.freeze({
+        questionId: `reported-b${blockNumber}-q${index + 1}`,
+        blockNumber,
+        itemIndex: index + 1,
+        componentId: `reported-component-${blockNumber}-${index + 1}`,
+        medleyId: `reported-medley-${blockNumber}`,
+      })])
+    )))),
+  }),
+});
+const reportedModel = buildReviewModel(reportedNoisyAttempt, []);
+assert.equal(reportedModel.questions.length, 40, 'single-block review caps leaked multi-block metadata to one block');
+assert.deepEqual(reportedModel.scoreSummary.perBlock.map((block) => block.blockNumber), [1]);
+assert.equal(reportedModel.scoreSummary.total, 40);
+assert.equal(reportedModel.questions.some((question) => question.blockNumber !== 1), false);
+
 console.log('review and history tests passed');

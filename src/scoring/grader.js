@@ -81,6 +81,33 @@ function getQuestionIdsForScoring(attempt, options = {}) {
   ]);
 }
 
+function filterRecordToQuestionIds(record, questionIds) {
+  const allowed = new Set(Array.isArray(questionIds) ? questionIds : []);
+  return Object.freeze(Object.fromEntries(Object.entries(isPlainObject(record) ? record : {}).filter(([questionId]) => allowed.has(questionId))));
+}
+
+function buildScoringAttemptForQuestionIds(attempt, questionIds) {
+  if (!Array.isArray(questionIds)) {
+    return attempt;
+  }
+  const ids = uniqueStrings(questionIds);
+  const allowed = new Set(ids);
+  const source = isPlainObject(attempt && attempt.source) ? attempt.source : {};
+  return Object.freeze({
+    ...attempt,
+    questionIds: Object.freeze(ids),
+    questionCount: ids.length,
+    responses: filterRecordToQuestionIds(attempt && attempt.responses, ids),
+    correctAnswers: filterRecordToQuestionIds(attempt && attempt.correctAnswers, ids),
+    timingByQuestionId: filterRecordToQuestionIds(attempt && attempt.timingByQuestionId, ids),
+    markedQuestionIds: Object.freeze((Array.isArray(attempt && attempt.markedQuestionIds) ? attempt.markedQuestionIds : []).filter((questionId) => allowed.has(questionId))),
+    source: Object.freeze({
+      ...source,
+      itemMetadataByQuestionId: filterRecordToQuestionIds(source.itemMetadataByQuestionId, ids),
+    }),
+  });
+}
+
 function getQuestionMetadata(attempt, questionId) {
   const metadata = getMetadataByQuestionId(attempt);
   const direct = isPlainObject(metadata[questionId]) ? metadata[questionId] : {};
@@ -327,7 +354,12 @@ function buildAttemptCompletionPatch(attempt, options = {}) {
   const partial = options.partial === true || (!manual && nativeCompletion.reviewLocked);
   const status = partial ? ATTEMPT_STATUS.PARTIAL : ATTEMPT_STATUS.COMPLETED;
   const existingSource = isPlainObject(attempt && attempt.source) ? attempt.source : {};
-  const scoredAttempt = Object.freeze({ ...attempt, status, completedAt });
+  const scoringQuestionIds = Array.isArray(options.questionIds)
+    ? options.questionIds
+    : (adapterState && Array.isArray(adapterState.itemList) && adapterState.itemList.length
+        ? adapterState.itemList.map((item) => item && item.questionId).filter(Boolean)
+        : null);
+  const scoredAttempt = buildScoringAttemptForQuestionIds(Object.freeze({ ...attempt, status, completedAt }), scoringQuestionIds);
   const scoreSummary = buildAttemptScoreSummary(scoredAttempt, {
     scoredAt: completedAt,
     reason: normalizeString(options.reason, manual ? 'manual-finish' : nativeCompletion.reason),

@@ -110,8 +110,34 @@ assert.equal(nativeCompletionPatch.reviewReady, true);
 assert.equal(nativeCompletionPatch.scoreSummary.reason, 'native-test');
 assert.equal(nativeCompletionPatch.source.completion.allLaunchedBlocksComplete, true);
 
+const eightyQuestionIds = Array.from({ length: 80 }, (_item, index) => `q${index + 1}`);
+const blockTwoQuestionIds = eightyQuestionIds.slice(40);
+const noisyAllBlockAttempt = createSyntheticAttempt({
+  launchedScope: { mode: 'all', blockCount: 2 },
+  questionIds: eightyQuestionIds,
+  questionCount: 80,
+  responses: Object.fromEntries(eightyQuestionIds.map((questionId) => [questionId, 'A'])),
+  correctAnswers: Object.fromEntries(eightyQuestionIds.map((questionId) => [questionId, 'A'])),
+  source: {
+    itemMetadataByQuestionId: Object.fromEntries(eightyQuestionIds.map((questionId, index) => [questionId, {
+      blockNumber: Math.floor(index / 40) + 1,
+      itemIndex: (index % 40) + 1,
+    }])),
+  },
+});
+const scopedCompletionPatch = buildAttemptCompletionPatch(noisyAllBlockAttempt, {
+  adapterState: createSyntheticAdapterState({
+    currentBlock: 2,
+    itemCount: 40,
+    itemList: blockTwoQuestionIds.map((questionId, index) => ({ questionId, blockNumber: 2, itemIndex: index + 1 })),
+  }),
+});
+assert.equal(scopedCompletionPatch.scoreSummary.total, 40, 'completion scoring ignores other launched blocks when adapter exposes current-block items');
+assert.equal(scopedCompletionPatch.scoreSummary.questionResults[0].questionId, 'q41');
+assert.equal(scopedCompletionPatch.scoreSummary.questionResults.some((result) => result.questionId === 'q1'), false);
+
 const progress = deriveActiveExamProgress({ attempt, adapterState: createSyntheticAdapterState() });
-assert.deepEqual(progress, { blockNumber: 1, answered: 2, total: 3, source: 'state-fallback' });
+assert.deepEqual(progress, { blockNumber: 1, answered: 2, total: 3, source: 'adapter-state' });
 assert.equal(formatActiveExamProgress(progress), '2/3 · Block 1');
 assert.equal(isAttemptReviewReady({ status: ATTEMPT_STATUS.COMPLETED }), true);
 assert.equal(isAttemptReviewReady({ status: ATTEMPT_STATUS.IN_PROGRESS, reviewReady: false }), false);

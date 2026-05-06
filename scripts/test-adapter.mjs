@@ -6,6 +6,7 @@ import {
   buildQuestionIdentity,
   coercePositiveInteger,
   createEmptyWebfredState,
+  createWebfredSiteAdapter,
   extractChoicesFromDom,
   extractCurrentContentFromDom,
   extractNavigationStateFromDom,
@@ -108,6 +109,50 @@ assert.deepEqual(normalizeChoiceFromAngular({ optionId: 'A', text: 'Alpha', sele
   disabled: false,
 });
 assert.equal(normalizeChoicesFromAngular([{ value: 'B', label: 'Beta' }])[0].id, 'B');
+
+const allBlockAngularItems = Array.from({ length: 80 }, (_item, index) => ({
+  componentId: `component-q${index + 1}`,
+  medleyId: `medley-${Math.floor(index / 40) + 1}`,
+}));
+const blockTwoItem = el('div', { id: 'item-q41', 'data-component-id': 'component-q41', 'data-item-index': '1' }, [
+  el('div', { class: 'NBExposition' }, ['Synthetic block 2 stem']),
+  el('div', { id: 'q41_div', class: 'NBOptionListComp answerbox' }, [choiceRows]),
+]);
+const allBlockNav = el('nav', {}, [el('ol', { id: 'leftnav' }, Array.from({ length: 40 }, (_entry, index) => (
+  el('li', index === 0 ? { class: 'currentitem', 'aria-current': 'true' } : {}, [el('span', { class: 'index' }, [String(index + 1)])])
+)))]);
+const allBlockBody = el('main', {}, [
+  allBlockNav,
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'medley-2', 'data-medley-id': 'medley-2' }, [blockTwoItem])])]),
+  el('div', {}, ['Block 2 of 2']),
+]);
+const allBlockDocument = createFakeDocument(allBlockBody, { title: 'Synthetic Step 1 Free 120' });
+const allBlockWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%202&mode=all');
+allBlockWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          currentBlock: 2,
+          blockCount: 2,
+          totalQuestions: 80,
+          itemList: allBlockAngularItems,
+          currentItem: allBlockAngularItems[40],
+        },
+      }),
+    }),
+  }),
+};
+const allBlockAdapter = createWebfredSiteAdapter({ window: allBlockWindow, document: allBlockDocument, logger: { debug() {}, warn() {} } });
+const allBlockState = allBlockAdapter.readState();
+assert.equal(allBlockState.currentBlock, 2);
+assert.equal(allBlockState.itemCount, 40, 'current block question count ignores other launched blocks');
+assert.equal(allBlockState.itemList.length, 40);
+assert.equal(allBlockState.itemList[0].componentId, 'component-q41');
+assert.equal(allBlockState.itemList[0].itemIndex, 1);
+assert.equal(allBlockState.itemList[39].componentId, 'component-q80');
+assert.equal(allBlockState.currentItem.itemIndex, 1);
 
 const adapterState = createSyntheticAdapterState();
 assert.deepEqual(snapshotForAttemptPosition(adapterState), {

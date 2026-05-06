@@ -163,6 +163,18 @@ function deriveActiveExamProgress(candidate = {}) {
   const progress = attempt && attempt.source && attempt.source.progress ? attempt.source.progress : {};
   const progressByBlock = normalizeProgressByBlock(progress);
   const blockNumber = chooseCurrentBlockNumber(adapterState, attempt, progressByBlock);
+  const liveQuestionIds = getBlockQuestionIds(adapterState, attempt, blockNumber);
+  if (adapterState && Array.isArray(adapterState.itemList) && adapterState.itemList.length) {
+    const responses = mergeResponsesForProgress(attempt, adapterState);
+    const total = inferBlockTotal(adapterState, attempt, blockNumber, liveQuestionIds);
+    const answered = countAnsweredResponses(responses, liveQuestionIds);
+    return Object.freeze({
+      blockNumber,
+      answered: total > 0 ? Math.min(answered, total) : answered,
+      total,
+      source: 'adapter-state',
+    });
+  }
   const progressBlock = progressByBlock[String(blockNumber)];
 
   if (progressBlock && progressBlock.total > 0) {
