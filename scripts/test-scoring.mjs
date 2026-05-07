@@ -141,6 +141,31 @@ assert.equal(scopedCompletionPatch.scoreSummary.total, 40, 'completion scoring i
 assert.equal(scopedCompletionPatch.scoreSummary.questionResults[0].questionId, 'q41');
 assert.equal(scopedCompletionPatch.scoreSummary.questionResults.some((result) => result.questionId === 'q1'), false);
 
+const skippedCurrentQuestionIds = Array.from({ length: 40 }, (_item, index) => `skip-q${index + 1}`).filter((questionId) => questionId !== 'skip-q9');
+const skippedCurrentQuestionAdapterState = createSyntheticAdapterState({
+  currentBlock: 1,
+  itemCount: 40,
+  currentItem: { questionId: 'skip-q9', blockNumber: 1, itemIndex: 9, componentId: 'skip-component-9', medleyId: 'skip-medley', current: true },
+  itemList: skippedCurrentQuestionIds.map((questionId) => {
+    const itemIndex = Number(questionId.match(/\d+$/)[0]);
+    return { questionId, blockNumber: 1, itemIndex, componentId: `skip-component-${itemIndex}`, medleyId: 'skip-medley' };
+  }),
+});
+const skippedCurrentCompletionPatch = buildAttemptCompletionPatch(createSyntheticAttempt({
+  id: 'attempt-skipped-current-question',
+  questionIds: skippedCurrentQuestionIds,
+  questionCount: 40,
+  launchedScope: { mode: 'test', block: '1' },
+  blockMetadata: [{ blockNumber: 1, itemCount: 40 }],
+  responses: Object.fromEntries(skippedCurrentQuestionIds.slice(0, 8).map((questionId) => [questionId, 'A'])),
+  correctAnswers: Object.fromEntries([...skippedCurrentQuestionIds, 'skip-q9'].map((questionId) => [questionId, 'A'])),
+}), { adapterState: skippedCurrentQuestionAdapterState, completedAt: '2026-05-05T02:00:00.000Z' });
+assert.equal(skippedCurrentCompletionPatch.questionIds.length, 40, 'completion includes current unanswered item missing from stale itemList');
+assert.equal(skippedCurrentCompletionPatch.questionIds[8], 'skip-q9');
+assert.equal(skippedCurrentCompletionPatch.source.itemMetadataByQuestionId['skip-q9'].itemIndex, 9);
+assert.equal(skippedCurrentCompletionPatch.scoreSummary.total, 40);
+assert.equal(skippedCurrentCompletionPatch.scoreSummary.questionResults.find((result) => result.questionId === 'skip-q9').status, GRADE_STATUS.OMITTED);
+
 const progress = deriveActiveExamProgress({ attempt, adapterState: createSyntheticAdapterState() });
 assert.deepEqual(progress, { blockNumber: 1, answered: 2, total: 3, source: 'adapter-state' });
 assert.equal(formatActiveExamProgress(progress), '2/3 · Block 1');

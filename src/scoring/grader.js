@@ -86,6 +86,157 @@ function filterRecordToQuestionIds(record, questionIds) {
   return Object.freeze(Object.fromEntries(Object.entries(isPlainObject(record) ? record : {}).filter(([questionId]) => allowed.has(questionId))));
 }
 
+function normalizeAdapterCompletionItem(item, adapterState, fallbackIndex = 0, current = false) {
+  const questionId = normalizeString(item && item.questionId, '');
+  if (!questionId) {
+    return null;
+  }
+  return Object.freeze({
+    questionId,
+    blockNumber: coercePositiveInteger(item && item.blockNumber, coercePositiveInteger(adapterState && adapterState.currentBlock, 1)),
+    itemIndex: coercePositiveInteger(item && item.itemIndex, fallbackIndex || 1),
+    componentId: normalizeString(item && item.componentId, ''),
+    medleyId: normalizeString(item && item.medleyId, ''),
+    identitySource: normalizeString(item && item.identitySource, ''),
+    source: normalizeString(item && item.source, ''),
+    _current: current,
+  });
+}
+
+function adapterCompletionPositionKey(item) {
+  const blockNumber = coercePositiveInteger(item && item.blockNumber, 0);
+  const itemIndex = coercePositiveInteger(item && item.itemIndex, 0);
+  return blockNumber && itemIndex ? `${blockNumber}\u0000${itemIndex}` : '';
+}
+
+function shouldIncludeAdapterCompletionCurrentItem(adapterState, itemList, currentItem) {
+  const currentQuestionId = normalizeString(currentItem && currentItem.questionId, '');
+  if (!currentQuestionId) {
+    return false;
+  }
+  const items = Array.isArray(itemList) ? itemList : [];
+  if (!items.length) {
+    return true;
+  }
+  const stateBlockNumber = coercePositiveInteger(adapterState && adapterState.currentBlock, 0);
+  const currentBlockNumber = coercePositiveInteger(currentItem && currentItem.blockNumber, stateBlockNumber || 1);
+  if (stateBlockNumber && currentBlockNumber && currentBlockNumber !== stateBlockNumber) {
+    return false;
+  }
+  const itemBlockNumbers = uniqueStrings(items.map((item) => item && item.blockNumber))
+    .map((entry) => coercePositiveInteger(entry, 0))
+    .filter(Boolean);
+  if (itemBlockNumbers.length && currentBlockNumber && !itemBlockNumbers.includes(currentBlockNumber)) {
+    return false;
+  }
+  const currentPositionKey = adapterCompletionPositionKey(currentItem);
+  const hasSameQuestion = items.some((item) => normalizeString(item && item.questionId, '') === currentQuestionId);
+  const hasSamePosition = Boolean(currentPositionKey && items.some((item) => adapterCompletionPositionKey(item) === currentPositionKey));
+  const expectedCount = coercePositiveInteger(adapterState && adapterState.itemCount, 0);
+  if (!hasSameQuestion && !hasSamePosition && expectedCount && items.length >= expectedCount) {
+    return false;
+  }
+  return true;
+}
+
+function stripAdapterCompletionItemInternal(item) {
+  const { _current, ...publicItem } = item;
+  return Object.freeze(publicItem);
+}
+
+function freezeArrayIfArray(value) {
+  return Array.isArray(value) ? Object.freeze(value) : value;
+}
+
+function getCompletedQuestionCount(questionIds, attempt) {
+  return Array.isArray(questionIds)
+    ? questionIds.length
+    : coercePositiveInteger(attempt && attempt.questionCount, 0);
+}
+
+function getAdapterCompletionItems(adapterState) {
+  const itemList = Array.isArray(adapterState && adapterState.itemList) ? adapterState.itemList : [];
+  const items = itemList
+    .map((item, index) => normalizeAdapterCompletionItem(item, adapterState, index + 1, false))
+    .filter(Boolean);
+  const currentItem = adapterState && adapterState.currentItem;
+  const current = shouldIncludeAdapterCompletionCurrentItem(adapterState, itemList, currentItem)
+    ? normalizeAdapterCompletionItem(currentItem, adapterState, items.length + 1, true)
+    : null;
+  if (current) {
+    const sameQuestionIndex = items.findIndex((item) => item.questionId === current.questionId);
+    const samePositionIndex = items.findIndex((item) => adapterCompletionPositionKey(item) === adapterCompletionPositionKey(current));
+    if (sameQuestionIndex >= 0) {
+      items[sameQuestionIndex] = current;
+    } else if (samePositionIndex >= 0) {
+      items[samePositionIndex] = current;
+    } else {
+      items.push(current);
+    }
+  }
+  const seenQuestionIds = new Set();
+  return items.filter((item) => {
+    if (!item || seenQuestionIds.has(item.questionId)) {
+      return false;
+    }
+    seenQuestionIds.add(item.questionId);
+    return true;
+  }).sort((left, right) => {
+    if (left.blockNumber !== right.blockNumber) {
+      return left.blockNumber - right.blockNumber;
+    }
+    if (left.itemIndex !== right.itemIndex) {
+      return left.itemIndex - right.itemIndex;
+    }
+    return left.questionId.localeCompare(right.questionId);
+  }).map(stripAdapterCompletionItemInternal);
+}
+
+function getAdapterCompletionQuestionIds(adapterItems) {
+  return uniqueStrings((Array.isArray(adapterItems) ? adapterItems : []).map((item) => item && item.questionId));
+}
+
+function buildAdapterItemMetadataByQuestionId(adapterItems) {
+  return Object.freeze(Object.fromEntries((Array.isArray(adapterItems) ? adapterItems : []).map((item) => [item.questionId, Object.freeze({
+    questionId: item.questionId,
+    blockNumber: item.blockNumber,
+    itemIndex: item.itemIndex,
+    componentId: item.componentId,
+    medleyId: item.medleyId,
+    identitySource: item.identitySource,
+    source: item.source,
+  })])));
+}
+
+function mergeCompletionBlockMetadata(attempt, adapterState) {
+  const blocksByNumber = new Map();
+  (Array.isArray(attempt && attempt.blockMetadata) ? attempt.blockMetadata : []).forEach((block) => {
+    const blockNumber = coercePositiveInteger(block && (block.blockNumber || block.block || block.index), blocksByNumber.size + 1);
+    blocksByNumber.set(blockNumber, Object.freeze({ ...block, blockNumber }));
+  });
+  (Array.isArray(adapterState && adapterState.blockMetadata) ? adapterState.blockMetadata : []).forEach((block) => {
+    const blockNumber = coercePositiveInteger(block && (block.blockNumber || block.block || block.index), blocksByNumber.size + 1);
+    blocksByNumber.set(blockNumber, Object.freeze({ ...block, blockNumber }));
+  });
+  const currentBlock = coercePositiveInteger(adapterState && adapterState.currentBlock, 0);
+  const itemCount = coercePositiveInteger(adapterState && adapterState.itemCount, 0);
+  if (currentBlock && itemCount && !blocksByNumber.has(currentBlock)) {
+    blocksByNumber.set(currentBlock, Object.freeze({ blockNumber: currentBlock, itemCount, label: `Block ${currentBlock}` }));
+  }
+  return Object.freeze(Array.from(blocksByNumber.values()).sort((left, right) => left.blockNumber - right.blockNumber));
+}
+
+function buildCompletionSource(existingSource, adapterMetadataByQuestionId, questionIds = null) {
+  const existingMetadata = isPlainObject(existingSource && existingSource.itemMetadataByQuestionId) ? existingSource.itemMetadataByQuestionId : {};
+  const mergedMetadata = Object.freeze({ ...existingMetadata, ...(isPlainObject(adapterMetadataByQuestionId) ? adapterMetadataByQuestionId : {}) });
+  return Object.freeze({
+    ...(isPlainObject(existingSource) ? existingSource : {}),
+    itemMetadataByQuestionId: Array.isArray(questionIds) && questionIds.length
+      ? filterRecordToQuestionIds(mergedMetadata, questionIds)
+      : mergedMetadata,
+  });
+}
+
 function buildScoringAttemptForQuestionIds(attempt, questionIds) {
   if (!Array.isArray(questionIds)) {
     return attempt;
@@ -354,12 +505,23 @@ function buildAttemptCompletionPatch(attempt, options = {}) {
   const partial = options.partial === true || (!manual && nativeCompletion.reviewLocked);
   const status = partial ? ATTEMPT_STATUS.PARTIAL : ATTEMPT_STATUS.COMPLETED;
   const existingSource = isPlainObject(attempt && attempt.source) ? attempt.source : {};
+  const adapterItems = getAdapterCompletionItems(adapterState);
+  const adapterMetadataByQuestionId = buildAdapterItemMetadataByQuestionId(adapterItems);
   const scoringQuestionIds = Array.isArray(options.questionIds)
     ? options.questionIds
     : (adapterState && Array.isArray(adapterState.itemList) && adapterState.itemList.length
-        ? adapterState.itemList.map((item) => item && item.questionId).filter(Boolean)
+        ? getAdapterCompletionQuestionIds(adapterItems)
         : null);
-  const scoredAttempt = buildScoringAttemptForQuestionIds(Object.freeze({ ...attempt, status, completedAt }), scoringQuestionIds);
+  const completedAttempt = Object.freeze({
+    ...attempt,
+    status,
+    completedAt,
+    blockMetadata: freezeArrayIfArray(adapterItems.length ? mergeCompletionBlockMetadata(attempt, adapterState) : attempt && attempt.blockMetadata),
+    questionIds: freezeArrayIfArray(scoringQuestionIds ? uniqueStrings(scoringQuestionIds) : attempt && attempt.questionIds),
+    questionCount: getCompletedQuestionCount(scoringQuestionIds, attempt),
+    source: buildCompletionSource(existingSource, adapterMetadataByQuestionId, scoringQuestionIds),
+  });
+  const scoredAttempt = buildScoringAttemptForQuestionIds(completedAttempt, scoringQuestionIds);
   const scoreSummary = buildAttemptScoreSummary(scoredAttempt, {
     scoredAt: completedAt,
     reason: normalizeString(options.reason, manual ? 'manual-finish' : nativeCompletion.reason),
@@ -368,9 +530,12 @@ function buildAttemptCompletionPatch(attempt, options = {}) {
     status,
     reviewReady: true,
     completedAt,
+    blockMetadata: completedAttempt.blockMetadata,
+    questionIds: completedAttempt.questionIds,
+    questionCount: coerceNonNegativeInteger(scoredAttempt && scoredAttempt.questionCount, coerceNonNegativeInteger(completedAttempt && completedAttempt.questionCount, 0)),
     scoreSummary,
     source: Object.freeze({
-      ...existingSource,
+      ...(isPlainObject(completedAttempt.source) ? completedAttempt.source : {}),
       completion: Object.freeze({
         ...(isPlainObject(existingSource.completion) ? existingSource.completion : {}),
         completedAt,
