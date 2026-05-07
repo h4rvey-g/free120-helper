@@ -313,6 +313,34 @@ function pickLatestEndExamAttempt(attempts) {
   return sorted[0] || null;
 }
 
+function shouldPreferStoredEndExamAttempt(currentAttempt, storedAttempt) {
+  if (!storedAttempt || isQBankCacheLikeAttempt(storedAttempt)) {
+    return false;
+  }
+  if (!currentAttempt) {
+    return true;
+  }
+  const currentId = normalizeString(currentAttempt.id, '');
+  const storedId = normalizeString(storedAttempt.id, '');
+  if (currentId && storedId && currentId === storedId) {
+    return false;
+  }
+  const currentEvidence = getAttemptReviewEvidenceCount(currentAttempt);
+  const storedEvidence = getAttemptReviewEvidenceCount(storedAttempt);
+  if (storedEvidence > 0 && currentEvidence <= 0) {
+    return true;
+  }
+  if (currentEvidence > 0 && storedEvidence <= 0) {
+    return false;
+  }
+  if (isAttemptReviewReady(storedAttempt) && !isAttemptReviewReady(currentAttempt)) {
+    return true;
+  }
+  const storedTime = getAttemptSortTime(storedAttempt);
+  const currentTime = getAttemptSortTime(currentAttempt);
+  return storedTime > currentTime;
+}
+
 function uniquePositiveIntegers(values) {
   const seen = new Set();
   const result = [];
@@ -933,9 +961,9 @@ function createActiveExamPill(options = {}) {
     let shouldRefresh = false;
     try {
       let candidate = snapshot.attempt || null;
-      if ((!candidate || !hasAttemptReviewEvidence(candidate)) && hasFunction(storage, 'listAttempts')) {
+      if (hasFunction(storage, 'listAttempts')) {
         const storedCandidate = pickLatestEndExamAttempt(await storage.listAttempts());
-        if (storedCandidate && (!candidate || hasAttemptReviewEvidence(storedCandidate) || !hasAttemptReviewEvidence(candidate))) {
+        if (shouldPreferStoredEndExamAttempt(candidate, storedCandidate)) {
           candidate = storedCandidate;
         }
       }
@@ -1032,7 +1060,7 @@ function createActiveExamPill(options = {}) {
     applyVisibility(snapshot.settings);
     applyEndExamReviewCta(snapshot);
     renderSettingsDetails(adapterDocument, dom.detailContainer, snapshot);
-    if (snapshot.endExamReview && snapshot.endExamReview.visible && (!snapshot.endExamReview.enabled || hasFailedQBankNoMatch(snapshot.attempt))) {
+    if (snapshot.endExamReview && snapshot.endExamReview.visible) {
       void syncEndExamAttempt(snapshot);
     }
     return snapshot;
@@ -1079,7 +1107,11 @@ function createActiveExamPill(options = {}) {
   }
 
   async function handleReviewReady() {
-    const snapshot = refresh();
+    let snapshot = refresh();
+    if (snapshot.endExamReview && snapshot.endExamReview.visible) {
+      await syncEndExamAttempt(snapshot);
+      snapshot = refresh();
+    }
     if (!snapshot.attempt || !snapshot.endExamReview || !snapshot.endExamReview.enabled) {
       setMessage(dom.message, snapshot.attempt && !hasAttemptReviewEvidence(snapshot.attempt) ? 'No captured helper questions found for this exam attempt.' : 'Review unlocks after the exam ends and local grading finishes.', 'warning');
       return;
@@ -1237,6 +1269,7 @@ export {
   isTerminalAdapterState,
   deriveEndExamReviewState,
   pickLatestEndExamAttempt,
+  shouldPreferStoredEndExamAttempt,
   buildEndExamCompletionAdapterState,
   buildEndExamCompletionPatch,
   refreshAttemptQBankKeysForEndExam,

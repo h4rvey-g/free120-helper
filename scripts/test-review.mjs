@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildReviewHtml, isQBankCacheAttempt, loadQBankFallbackSnapshots } from '../src/review/blob-builder.js';
+import { buildReviewHtml, isQBankCacheAttempt, loadQBankFallbackSnapshots, openReviewTab } from '../src/review/blob-builder.js';
 import { buildReviewModel } from '../src/review/model.js';
 import { ATTEMPT_STATUS } from '../src/core/constants.js';
 import { canOpenReviewFromHistory, formatHistoryAttemptRow, IMPORT_REPLACE_WARNING } from '../src/ui/launch-history.js';
@@ -151,6 +151,30 @@ const fallbackKeyModel = buildReviewModel({
 }, [Object.freeze({ questionId: 'q-fallback', correctAnswerId: 'A' })]);
 assert.equal(fallbackKeyModel.questions[0].status, 'correct');
 
+const qbankSelectionOnlyModel = buildReviewModel(Object.freeze({
+  id: 'attempt-qbank-selection-only',
+  questionIds: Object.freeze(['selection-q1']),
+  questionCount: 1,
+  correctAnswers: Object.freeze({ 'selection-q1': 'B' }),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze({
+      'selection-q1': Object.freeze({ questionId: 'selection-q1', blockNumber: 1, itemIndex: 1 }),
+    }),
+  }),
+}), [Object.freeze({
+  questionId: 'selection-q1',
+  blockNumber: 1,
+  itemIndex: 1,
+  choices: Object.freeze([
+    Object.freeze({ id: 'A', label: 'Option A', index: 1, selected: true }),
+    Object.freeze({ id: 'B', label: 'Option B', index: 2, selected: false }),
+  ]),
+  selectedAnswerId: '',
+  correctAnswerId: 'B',
+})]);
+assert.equal(qbankSelectionOnlyModel.questions[0].selectedAnswerId, 'A', 'review keeps selected choice from merged snapshot when response id is absent');
+assert.equal(qbankSelectionOnlyModel.questions[0].status, 'incorrect');
+
 const validReviewQuestionIds = Array.from({ length: 40 }, (_item, index) => `valid-q${index + 1}`);
 const noisyAttempt = Object.freeze({
   id: 'attempt-noisy-review',
@@ -285,6 +309,27 @@ assert.deepEqual(scopedReviewModel.questions.map((question) => question.question
 assert.deepEqual(scopedReviewModel.scoreSummary.perBlock.map((block) => block.blockNumber), [2]);
 assert.equal(scopedReviewModel.scoreSummary.answered, 0);
 
+const staleLaunchedScopeBlockIds = Array.from({ length: 3 }, (_item, index) => `stale-scope-b3-q${index + 1}`);
+const staleLaunchedScopeModel = buildReviewModel(Object.freeze({
+  id: 'attempt-review-stale-launched-scope-block-three',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: 'test', block: '1', testDefinitionDisplayName: 'Step 1 Block 1' }),
+  questionIds: Object.freeze(staleLaunchedScopeBlockIds),
+  questionCount: 3,
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 3, itemCount: 3, label: 'Block 3' })]),
+  correctAnswers: Object.freeze(Object.fromEntries(staleLaunchedScopeBlockIds.map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    progress: Object.freeze({
+      byBlock: Object.freeze({
+        3: Object.freeze({ blockNumber: 3, answered: 0, total: 3, questionIds: Object.freeze(staleLaunchedScopeBlockIds), answeredQuestionIds: Object.freeze([]) }),
+      }),
+    }),
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries(staleLaunchedScopeBlockIds.map((questionId, index) => [questionId, Object.freeze({ questionId, blockNumber: 3, itemIndex: index + 1 })]))),
+  }),
+}), []);
+assert.deepEqual(staleLaunchedScopeModel.scoreSummary.perBlock.map((block) => block.blockNumber), [3], 'review trusts recorded current block over stale launched-scope block');
+assert.deepEqual(staleLaunchedScopeModel.questions.map((question) => question.blockNumber), [3, 3, 3]);
+
 const incompleteProgressIds = Array.from({ length: 40 }, (_item, index) => `incomplete-progress-q${index + 1}`);
 const incompleteProgressModel = buildReviewModel(Object.freeze({
   id: 'attempt-incomplete-progress-review',
@@ -304,6 +349,94 @@ const incompleteProgressModel = buildReviewModel(Object.freeze({
 }), []);
 assert.equal(incompleteProgressModel.questions.length, 40, 'review ignores incomplete progress question-id scope');
 assert.deepEqual(incompleteProgressModel.questions.map((question) => question.itemIndex), Array.from({ length: 40 }, (_item, index) => index + 1));
+
+const endExamBlockIds = Array.from({ length: 40 }, (_item, index) => `webfred:USMLE:Block-1:endexam-q${index + 1}`);
+let openedReviewHtml = '';
+const endExamReviewResult = await openReviewTab({
+  attemptId: 'attempt-endexam-stale-block-one-metadata',
+  window: Object.freeze({
+    Blob,
+    URL: Object.freeze({ createObjectURL(blob) { return `blob:test-review/${blob.size}`; } }),
+    open() { return { location: { href: '' }, document: { body: {}, title: '' } }; },
+    console: Object.freeze({ info() {} }),
+  }),
+  storage: Object.freeze({
+    async getAttempt() {
+      return Object.freeze({
+        id: 'attempt-endexam-stale-block-one-metadata',
+        status: ATTEMPT_STATUS.COMPLETED,
+        launchedScope: Object.freeze({ mode: '', block: '', testDefinitionDisplayName: 'Key' }),
+        questionIds: Object.freeze(endExamBlockIds),
+        questionCount: 40,
+        blockMetadata: Object.freeze([
+          Object.freeze({ blockNumber: 1, itemCount: 40, label: 'Block 1' }),
+          Object.freeze({ blockNumber: 40, itemCount: 40, label: 'Block 40' }),
+        ]),
+        correctAnswers: Object.freeze(Object.fromEntries(endExamBlockIds.map((questionId) => [questionId, 'A']))),
+        source: Object.freeze({
+          itemMetadataByQuestionId: Object.freeze(Object.fromEntries(endExamBlockIds.map((questionId, index) => [questionId, Object.freeze({
+            questionId,
+            blockNumber: 1,
+            itemIndex: index + 1,
+            componentId: `endexam-component-${index + 1}`,
+            medleyId: 'endexam-medley',
+          })]))),
+        }),
+      });
+    },
+    async listQuestionSnapshots(attemptId) {
+      if (String(attemptId).startsWith('qbank-cache:')) {
+        return endExamBlockIds.map((questionId, index) => Object.freeze({
+          id: `qbank-endexam-block40-${index + 1}`,
+          attemptId,
+          questionId: `qbank-block40-q${index + 1}`,
+          blockNumber: 40,
+          itemIndex: index + 1,
+          correctAnswerId: 'A',
+          renderedHtml: `<div id="qbank-endexam-${index + 1}"><ol class="options"></ol></div>`,
+          metadata: Object.freeze({ componentId: `endexam-component-${index + 1}`, medleyId: 'endexam-medley', blockNumber: 40, itemIndex: index + 1 }),
+        }));
+      }
+      return [Object.freeze({
+        id: 'own-endexam-block40-current',
+        attemptId,
+        questionId: endExamBlockIds[0],
+        blockNumber: 40,
+        itemIndex: 1,
+        selectedAnswerId: 'A',
+        renderedHtml: '<div id="own-current-block40"><ol class="options"></ol></div>',
+        metadata: Object.freeze({ blockNumber: 40, itemIndex: 1, questionContentSource: 'dom-current-item', capturedFromDom: true }),
+      })];
+    },
+    async listAttempts() {
+      return [Object.freeze({ id: 'qbank-cache:USMLE:Block40', source: Object.freeze({ cacheKind: 'qbank' }) })];
+    },
+  }),
+  debugDiagnostics: true,
+});
+openedReviewHtml = await endExamReviewResult.blob.text();
+assert.match(openedReviewHtml, /reviewBlockRepair/, 'end-exam review records block repair diagnostics');
+assert.match(openedReviewHtml, /"blockNumber":40/, 'end-exam review rebases stale Block 1 metadata to real completed block');
+assert.doesNotMatch(openedReviewHtml, /"modelBlocks":\[1\]/, 'end-exam review model no longer fixed to Block 1');
+assert.match(openedReviewHtml, /qbank-endexam-block40-1/, 'end-exam review uses qbank snapshots from repaired block');
+
+const blockMetadataRepairHtml = buildReviewHtml(Object.freeze({
+  id: 'attempt-endexam-block-metadata-only-repair',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: '', block: '', testDefinitionDisplayName: 'Key' }),
+  questionIds: Object.freeze(endExamBlockIds),
+  questionCount: 40,
+  blockMetadata: Object.freeze([
+    Object.freeze({ blockNumber: 1, itemCount: 40, label: 'Block 1' }),
+    Object.freeze({ blockNumber: 40, itemCount: 40, label: 'Block 40' }),
+  ]),
+  correctAnswers: Object.freeze(Object.fromEntries(endExamBlockIds.map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries(endExamBlockIds.map((questionId, index) => [questionId, Object.freeze({ questionId, blockNumber: 40, itemIndex: index + 1 })]))),
+    reviewBlockRepair: Object.freeze({ blockNumber: 40 }),
+  }),
+}), [], { debugDiagnostics: true });
+assert.match(blockMetadataRepairHtml, /"blockCounts":\{"40":40\}/, 'review page exposes repaired block filter option');
 
 const legacyShortIds = Array.from({ length: 38 }, (_item, index) => `legacy-short-q${index + 1}`);
 const legacyShortModel = buildReviewModel(Object.freeze({

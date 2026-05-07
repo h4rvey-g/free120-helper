@@ -116,6 +116,147 @@ const metadataOnlyScopeSnapshots = await loadQBankSnapshotsForAttempt(qbankStora
 assert.equal(metadataOnlyScopeSnapshots.length, 1, 'review qbank fallback uses launched scope block when stored metadata drifted');
 assert.equal(metadataOnlyScopeSnapshots[0].questionId, 'legacy-live-q1');
 
+const staleReviewBlockQBankStorage = Object.freeze({
+  async listAttempts() {
+    return [
+      Object.freeze({ id: 'qbank-cache:USMLE:STPF1:StaleBlock1', correctAnswers: Object.freeze({ 'qbank-stale-b1': 'A' }), source: Object.freeze({ cacheKind: 'qbank' }) }),
+      Object.freeze({ id: 'qbank-cache:USMLE:STPF1:ActualBlock3', correctAnswers: Object.freeze({ 'qbank-actual-b3': 'C' }), source: Object.freeze({ cacheKind: 'qbank' }) }),
+    ];
+  },
+  async listQuestionSnapshots(attemptId) {
+    if (attemptId.endsWith('StaleBlock1')) {
+      return [Object.freeze({
+        id: 'qbank-stale-review-b1-snapshot',
+        attemptId,
+        questionId: 'qbank-stale-b1',
+        blockNumber: 1,
+        itemIndex: 1,
+        correctAnswerId: 'A',
+        renderedHtml: '<div id="stale-b1"><ol class="options"></ol></div>',
+        metadata: Object.freeze({ componentId: 'COMP-STUCK', medleyId: 'MED-STUCK', blockNumber: 1, itemIndex: 1 }),
+      })];
+    }
+    return [Object.freeze({
+      id: 'qbank-stale-review-b3-snapshot',
+      attemptId,
+      questionId: 'qbank-actual-b3',
+      blockNumber: 3,
+      itemIndex: 1,
+      correctAnswerId: 'C',
+      renderedHtml: '<div id="actual-b3"><ol class="options"></ol></div>',
+      metadata: Object.freeze({ componentId: 'COMP-STUCK', medleyId: 'MED-STUCK', blockNumber: 3, itemIndex: 1 }),
+    })];
+  },
+});
+const staleReviewBlockSnapshots = await loadQBankSnapshotsForAttempt(staleReviewBlockQBankStorage, {
+  id: 'attempt-stale-launched-scope-review-block-three',
+  launchedScope: Object.freeze({ mode: 'test', block: '1', testDefinitionDisplayName: 'Step 1 Block 1' }),
+  questionIds: Object.freeze(['live-actual-b3-q1']),
+  questionCount: 1,
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 3, itemCount: 1, label: 'Block 3' })]),
+  source: Object.freeze({
+    progress: Object.freeze({ byBlock: Object.freeze({ 3: Object.freeze({ blockNumber: 3, total: 1, questionIds: Object.freeze(['live-actual-b3-q1']) }) }) }),
+    itemMetadataByQuestionId: Object.freeze({
+      'live-actual-b3-q1': Object.freeze({ componentId: 'COMP-STUCK', medleyId: 'MED-STUCK', blockNumber: 3, itemIndex: 1 }),
+    }),
+  }),
+}, []);
+assert.equal(staleReviewBlockSnapshots.length, 1);
+assert.equal(staleReviewBlockSnapshots[0].correctAnswerId, 'C', 'review qbank fallback trusts recorded block over stale launched scope');
+assert.equal(staleReviewBlockSnapshots[0].blockNumber, 3);
+
+const staleQuestionIdBlockStorage = Object.freeze({
+  async listAttempts() {
+    return [Object.freeze({
+      id: 'qbank-cache:USMLE:StaleIds:AllBlocks',
+      correctAnswers: Object.freeze({
+        'webfred:USMLE:Block-1:MED-SAME:COMP-SAME': 'A',
+        'webfred:USMLE:Block-4:MED-SAME:COMP-SAME': 'D',
+      }),
+      source: Object.freeze({ cacheKind: 'qbank' }),
+    })];
+  },
+  async listQuestionSnapshots() {
+    return [
+      Object.freeze({
+        id: 'qbank-stale-id-b1',
+        attemptId: 'qbank-cache:USMLE:StaleIds:AllBlocks',
+        questionId: 'webfred:USMLE:Block-1:MED-SAME:COMP-SAME',
+        blockNumber: 1,
+        itemIndex: 1,
+        correctAnswerId: 'A',
+        renderedHtml: '<div id="qid-b1"><ol class="options"></ol></div>',
+        metadata: Object.freeze({ componentId: 'COMP-SAME', medleyId: 'MED-SAME', blockNumber: 1, itemIndex: 1 }),
+      }),
+      Object.freeze({
+        id: 'qbank-stale-id-b4',
+        attemptId: 'qbank-cache:USMLE:StaleIds:AllBlocks',
+        questionId: 'webfred:USMLE:Block-4:MED-SAME:COMP-SAME',
+        blockNumber: 4,
+        itemIndex: 1,
+        correctAnswerId: 'D',
+        renderedHtml: '<div id="qid-b4"><ol class="options"></ol></div>',
+        metadata: Object.freeze({ componentId: 'COMP-SAME', medleyId: 'MED-SAME', blockNumber: 4, itemIndex: 1 }),
+      }),
+    ];
+  },
+});
+const staleQuestionIdBlockSnapshots = await loadQBankSnapshotsForAttempt(staleQuestionIdBlockStorage, {
+  id: 'attempt-stale-question-id-block-four',
+  launchedScope: Object.freeze({ mode: 'test', block: '4', testDefinitionDisplayName: 'Step 1 Block 4' }),
+  questionIds: Object.freeze(['webfred:USMLE:Block-1:MED-SAME:COMP-SAME']),
+  questionCount: 1,
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 4, itemCount: 1, label: 'Block 4' })]),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze({
+      'webfred:USMLE:Block-1:MED-SAME:COMP-SAME': Object.freeze({ componentId: 'COMP-SAME', medleyId: 'MED-SAME', blockNumber: 4, itemIndex: 1 }),
+    }),
+  }),
+}, []);
+assert.equal(staleQuestionIdBlockSnapshots.length, 1);
+assert.equal(staleQuestionIdBlockSnapshots[0].correctAnswerId, 'D', 'qbank fallback ignores stale Block-1 question id when metadata says Block 4');
+assert.equal(staleQuestionIdBlockSnapshots[0].questionId, 'webfred:USMLE:Block-1:MED-SAME:COMP-SAME', 'snapshot still attaches to live stale question id');
+assert.equal(staleQuestionIdBlockSnapshots[0].metadata.qbankCacheOriginalQuestionId, 'webfred:USMLE:Block-4:MED-SAME:COMP-SAME');
+
+const qbankLegacyUnscopedAttempt = Object.freeze({
+  id: 'qbank-cache:USMLE:LegacyUnscoped:Block1',
+  correctAnswers: Object.freeze({ 'webfred:USMLE:Block-1:LEGACY-MED:LEGACY-COMP': 'B' }),
+  source: Object.freeze({ cacheKind: 'qbank' }),
+});
+const qbankLegacyUnscopedStorage = Object.freeze({
+  async listAttempts() { return [qbankLegacyUnscopedAttempt]; },
+  async listQuestionSnapshots() {
+    return [Object.freeze({
+      id: 'qbank-legacy-unscoped-b1',
+      attemptId: qbankLegacyUnscopedAttempt.id,
+      questionId: 'webfred:USMLE:Block-1:LEGACY-MED:LEGACY-COMP',
+      blockNumber: 1,
+      itemIndex: 7,
+      correctAnswerId: 'B',
+      renderedHtml: '<div id="legacy-unscoped"><ol class="options"></ol></div>',
+      metadata: Object.freeze({ componentId: 'LEGACY-COMP', medleyId: 'LEGACY-MED', blockNumber: 1, itemIndex: 7 }),
+    })];
+  },
+});
+const qbankLegacyUnscopedSnapshots = await loadQBankSnapshotsForAttempt(qbankLegacyUnscopedStorage, {
+  id: 'attempt-legacy-unscoped-block-six',
+  launchedScope: Object.freeze({ mode: 'test', block: '6', testDefinitionDisplayName: 'Step 1 Block 6' }),
+  questionIds: Object.freeze(['webfred:USMLE:Block-6:LEGACY-MED:LEGACY-COMP']),
+  questionCount: 40,
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 6, itemCount: 40, label: 'Block 6' })]),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze({
+      'webfred:USMLE:Block-6:LEGACY-MED:LEGACY-COMP': Object.freeze({ componentId: 'LEGACY-COMP', medleyId: 'LEGACY-MED', blockNumber: 6, itemIndex: 7 }),
+    }),
+  }),
+}, []);
+assert.equal(qbankLegacyUnscopedSnapshots.length, 1, 'review qbank fallback can reuse unique component snapshot when cache has old block scope');
+assert.equal(qbankLegacyUnscopedSnapshots[0].questionId, 'webfred:USMLE:Block-6:LEGACY-MED:LEGACY-COMP');
+assert.equal(qbankLegacyUnscopedSnapshots[0].blockNumber, 6, 'unscoped fallback rebases cloned snapshot to live block');
+assert.equal(qbankLegacyUnscopedSnapshots[0].itemIndex, 7);
+assert.equal(qbankLegacyUnscopedSnapshots[0].metadata.qbankCacheOriginalBlockNumber, 1);
+assert.equal(qbankLegacyUnscopedSnapshots[0].metadata.qbankCacheMatchSource, 'component-medley-unscoped-block-mismatch');
+
 const shiftedQBankAttempt = Object.freeze({
   id: 'qbank-cache:USMLE:STPF1:ShiftedBlock1',
   correctAnswers: Object.freeze({

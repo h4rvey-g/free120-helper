@@ -54,6 +54,38 @@ function qbankPositionKey(candidate) {
   return blockNumber && itemIndex ? `${blockNumber}\u0000${itemIndex}` : '';
 }
 
+function getCandidateBlockNumber(candidate) {
+  const metadata = getMetadata(candidate);
+  return coercePositiveInteger((candidate && candidate.blockNumber) || metadata.blockNumber, 0);
+}
+
+function parseQuestionIdBlockNumber(questionId) {
+  const match = normalizeString(questionId, '').match(/(?:^|:)Block-(\d+)(?::|$)/i);
+  return match ? coercePositiveInteger(match[1], 0) : 0;
+}
+
+function getEntryBlockNumber(entry) {
+  const snapshot = entry && entry.snapshot ? entry.snapshot : null;
+  const metadata = plainObjectOrEmpty(snapshot && snapshot.metadata);
+  return coercePositiveInteger(
+    snapshot && snapshot.blockNumber,
+    coercePositiveInteger(metadata.blockNumber, coercePositiveInteger(metadata.qbankCacheOriginalBlockNumber || metadata.qbankFallbackOriginalBlockNumber, 0))
+  );
+}
+
+function directQuestionIdMatchesCandidateBlock(candidate, entry = null) {
+  const candidateBlockNumber = getCandidateBlockNumber(candidate);
+  if (!candidateBlockNumber) {
+    return true;
+  }
+  const questionIdBlockNumber = parseQuestionIdBlockNumber(candidate && candidate.questionId);
+  if (questionIdBlockNumber && questionIdBlockNumber !== candidateBlockNumber) {
+    return false;
+  }
+  const entryBlockNumber = getEntryBlockNumber(entry);
+  return !entryBlockNumber || entryBlockNumber === candidateBlockNumber;
+}
+
 function parseExplicitBlockNumber(value) {
   const text = normalizeString(value, '');
   if (!text || /\b(?:all|full|entire|whole|complete)\b/i.test(text)) {
@@ -77,6 +109,38 @@ function getScopeBlockNumber(scope) {
     || parseExplicitBlockNumber(source.testDefinitionName);
 }
 
+function getSingleProgressBlockNumber(attempt) {
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  const progress = plainObjectOrEmpty(source.progress);
+  const byBlock = plainObjectOrEmpty(progress.byBlock);
+  const blockNumbers = uniqueNormalizedStrings(Object.entries(byBlock).map(([key, block]) => {
+    const progressBlock = plainObjectOrEmpty(block);
+    const blockNumber = coercePositiveInteger(progressBlock.blockNumber || progressBlock.block || progressBlock.index, coercePositiveInteger(key, 0));
+    const hasEvidence = coercePositiveInteger(progressBlock.total || progressBlock.itemCount || progressBlock.questionCount || progressBlock.itemsCount, 0)
+      || arrayOrEmpty(progressBlock.questionIds).length
+      || arrayOrEmpty(progressBlock.answeredQuestionIds).length;
+    return hasEvidence ? blockNumber : 0;
+  })).map((entry) => coercePositiveInteger(entry, 0)).filter(Boolean);
+  return blockNumbers.length === 1 ? blockNumbers[0] : 0;
+}
+
+function getSingleBlockMetadataNumber(attempt) {
+  const blockNumbers = uniqueNormalizedStrings(arrayOrEmpty(attempt && attempt.blockMetadata).map((block, index) => {
+    const blockObject = plainObjectOrEmpty(block);
+    const blockNumber = coercePositiveInteger(blockObject.blockNumber || blockObject.block || blockObject.index, index + 1);
+    const hasEvidence = coercePositiveInteger(blockObject.itemCount || blockObject.questionCount || blockObject.itemsCount, 0);
+    return hasEvidence ? blockNumber : 0;
+  })).map((entry) => coercePositiveInteger(entry, 0)).filter(Boolean);
+  return blockNumbers.length === 1 ? blockNumbers[0] : 0;
+}
+
+function getRecordedReviewBlockNumber(attempt) {
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  return getSingleProgressBlockNumber(attempt)
+    || getSingleBlockMetadataNumber(attempt)
+    || coercePositiveInteger(source.activeBlock || source.currentBlock, 0);
+}
+
 function getAttemptMetadataByQuestionId(attempt) {
   const source = plainObjectOrEmpty(attempt && attempt.source);
   return plainObjectOrEmpty(source.itemMetadataByQuestionId);
@@ -96,19 +160,32 @@ function mergeLookupItem(item, metadata = {}) {
 function getLookupCandidates(item, options = {}) {
   const base = mergeLookupItem(item);
   const scopeBlockNumber = getScopeBlockNumber(options.launchedScope || (options.attempt && options.attempt.launchedScope));
+  const recordedBlockNumber = getRecordedReviewBlockNumber(options.attempt);
   const baseBlockNumber = coercePositiveInteger(base.blockNumber || getMetadata(base).blockNumber, 0);
   const allowScopeBlockRepair = options.allowScopeBlockRepair !== false;
-  if (!allowScopeBlockRepair || !scopeBlockNumber || scopeBlockNumber === baseBlockNumber) {
+  if (!allowScopeBlockRepair) {
     return [base];
   }
-  return [
-    Object.freeze({
+  const candidateBlockNumbers = uniqueNormalizedStrings([
+    recordedBlockNumber && recordedBlockNumber === baseBlockNumber ? baseBlockNumber : 0,
+    recordedBlockNumber,
+    !recordedBlockNumber ? scopeBlockNumber : 0,
+    baseBlockNumber,
+    scopeBlockNumber,
+  ]).map((entry) => coercePositiveInteger(entry, 0)).filter(Boolean);
+  if (!candidateBlockNumbers.length || (candidateBlockNumbers.length === 1 && candidateBlockNumbers[0] === baseBlockNumber)) {
+    return [base];
+  }
+  return candidateBlockNumbers.map((blockNumber) => {
+    if (blockNumber === baseBlockNumber) {
+      return base;
+    }
+    return Object.freeze({
       ...base,
-      blockNumber: scopeBlockNumber,
-      metadata: Object.freeze({ ...getMetadata(base), blockNumber: scopeBlockNumber }),
-    }),
-    base,
-  ];
+      blockNumber,
+      metadata: Object.freeze({ ...getMetadata(base), blockNumber }),
+    });
+  });
 }
 function setIfAbsent(map, key, value) {
   if (key && value !== undefined && value !== null && value !== '' && !map.has(key)) {
@@ -223,11 +300,11 @@ function resolveQBankEntryForItem(context, item, options = {}) {
   for (const candidate of candidates) {
     const questionId = normalizeString(candidate && candidate.questionId, '');
     const directSnapshotEntry = questionId ? context.snapshotEntriesByQuestionId.get(questionId) : null;
-    if (directSnapshotEntry) {
+    if (directSnapshotEntry && directQuestionIdMatchesCandidateBlock(candidate, directSnapshotEntry)) {
       return Object.freeze({ ...directSnapshotEntry, matchSource: 'question-id' });
     }
     const directCorrectAnswerId = questionId ? normalizeString(context.correctAnswersByQuestionId.get(questionId), '') : '';
-    if (directCorrectAnswerId) {
+    if (directCorrectAnswerId && directQuestionIdMatchesCandidateBlock(candidate)) {
       return Object.freeze({ ...createDirectAnswerEntry(questionId, directCorrectAnswerId), matchSource: 'question-id' });
     }
   }
@@ -248,14 +325,15 @@ function resolveQBankEntryForItem(context, item, options = {}) {
   for (const candidate of candidates) {
     const itemMetadata = getMetadata(candidate);
     const itemBlockNumber = coercePositiveInteger((candidate && candidate.blockNumber) || itemMetadata.blockNumber, 0);
-    const unscopedComponentKey = !itemBlockNumber ? qbankUnscopedComponentKey(candidate) : '';
+    const allowUnscopedComponentFallback = options.allowUnscopedComponentFallback === true;
+    const unscopedComponentKey = (!itemBlockNumber || allowUnscopedComponentFallback) ? qbankUnscopedComponentKey(candidate) : '';
     const unscopedMap = context.snapshotEntriesByUnscopedComponentKey;
     const ambiguousKeys = context.ambiguousUnscopedComponentKeys;
     const unscopedEntry = unscopedMap && unscopedComponentKey && !(ambiguousKeys && ambiguousKeys.has(unscopedComponentKey))
       ? unscopedMap.get(unscopedComponentKey)
       : null;
     if (unscopedEntry) {
-      return Object.freeze({ ...unscopedEntry, matchSource: 'component-medley-unscoped' });
+      return Object.freeze({ ...unscopedEntry, matchSource: itemBlockNumber ? 'component-medley-unscoped-block-mismatch' : 'component-medley-unscoped' });
     }
   }
   return null;
@@ -368,8 +446,9 @@ function cloneQBankSnapshotForQuestion(match, questionId, item = {}) {
   const originalItemIndex = coercePositiveInteger(match && match.snapshot && match.snapshot.itemIndex, coercePositiveInteger(snapshotMetadata.itemIndex, 0));
   const itemBlockNumber = coercePositiveInteger(item && item.blockNumber, 0);
   const itemIndex = coercePositiveInteger(item && item.itemIndex, 0);
-  const blockNumber = originalBlockNumber || itemBlockNumber;
-  const clonedItemIndex = originalItemIndex || itemIndex;
+  const unscopedBlockMismatch = normalizeString(match && match.matchSource, '') === 'component-medley-unscoped-block-mismatch';
+  const blockNumber = unscopedBlockMismatch && itemBlockNumber ? itemBlockNumber : (originalBlockNumber || itemBlockNumber);
+  const clonedItemIndex = unscopedBlockMismatch && itemIndex ? itemIndex : (originalItemIndex || itemIndex);
   return Object.freeze({
     ...match.snapshot,
     id: `${normalizeString(match.snapshot.id, 'qbank-snapshot')}::qbank::${questionId}`,
@@ -431,11 +510,12 @@ function getAttemptProgressBlockTotal(attempt, blockNumber) {
 
 function getQBankReviewFallbackBlock(attempt) {
   const scopeBlockNumber = getScopeBlockNumber(attempt && attempt.launchedScope);
+  const recordedBlockNumber = getRecordedReviewBlockNumber(attempt);
   const metadataByQuestionId = getAttemptMetadataByQuestionId(attempt);
   const metadataBlockNumbers = uniqueNormalizedStrings(Object.values(metadataByQuestionId).map((metadata) => metadata && metadata.blockNumber))
     .map((entry) => coercePositiveInteger(entry, 0))
     .filter(Boolean);
-  const blockNumber = scopeBlockNumber || (metadataBlockNumbers.length === 1 ? metadataBlockNumbers[0] : 0);
+  const blockNumber = recordedBlockNumber || scopeBlockNumber || (metadataBlockNumbers.length === 1 ? metadataBlockNumbers[0] : 0);
   if (!blockNumber) {
     return Object.freeze({ blockNumber: 0, expectedCount: 0 });
   }
@@ -505,7 +585,7 @@ async function loadQBankSnapshotsForAttempt(storage, attempt, ownSnapshots = [],
       return;
     }
     const metadata = getAttemptItemMetadata(attempt, questionId);
-    const match = resolveQBankEntryForItem(context, { questionId, ...metadata }, { attempt });
+    const match = resolveQBankEntryForItem(context, { questionId, ...metadata }, { attempt, allowUnscopedComponentFallback: true });
     if (match && match.snapshot) {
       qbankSnapshots.push(cloneQBankSnapshotForQuestion(match, questionId, metadata));
     }

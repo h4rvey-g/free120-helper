@@ -49,6 +49,464 @@ function scoreLabel(scoreSummary) {
   return `${score.label} (${score.percent}%)${suffix}`;
 }
 
+function summarizeBlockCounts(values) {
+  const counts = new Map();
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const blockNumber = Number(value && (value.blockNumber || value.block || value.index) || 0);
+    const key = Number.isInteger(blockNumber) && blockNumber > 0 ? String(blockNumber) : 'unknown';
+    counts.set(key, (counts.get(key) || 0) + 1);
+  });
+  return Object.freeze(Object.fromEntries(Array.from(counts.entries()).sort((left, right) => Number(left[0]) - Number(right[0]))));
+}
+
+function summarizeQuestionIds(questionIds) {
+  const ids = Array.isArray(questionIds) ? questionIds.map((questionId) => normalizeString(questionId, '')).filter(Boolean) : [];
+  return Object.freeze({
+    count: ids.length,
+    first: Object.freeze(ids.slice(0, 5)),
+    last: Object.freeze(ids.slice(-5)),
+  });
+}
+
+function summarizeAttemptBlocksForDebug(attempt) {
+  const source = attempt && attempt.source && typeof attempt.source === 'object' ? attempt.source : {};
+  const metadataByQuestionId = source.itemMetadataByQuestionId && typeof source.itemMetadataByQuestionId === 'object' ? source.itemMetadataByQuestionId : {};
+  const progress = source.progress && typeof source.progress === 'object' ? source.progress : {};
+  const progressByBlock = progress.byBlock && typeof progress.byBlock === 'object' ? progress.byBlock : {};
+  return Object.freeze({
+    launchedScope: Object.freeze({ ...(attempt && attempt.launchedScope && typeof attempt.launchedScope === 'object' ? attempt.launchedScope : {}) }),
+    questionIds: summarizeQuestionIds(attempt && attempt.questionIds),
+    questionCount: Number(attempt && attempt.questionCount || 0),
+    blockMetadata: Object.freeze((Array.isArray(attempt && attempt.blockMetadata) ? attempt.blockMetadata : []).map((block) => Object.freeze({
+      blockNumber: Number(block && (block.blockNumber || block.block || block.index) || 0),
+      itemCount: Number(block && (block.itemCount || block.questionCount || block.itemsCount) || 0),
+      label: normalizeString(block && block.label, ''),
+    }))),
+    metadataBlockCounts: summarizeBlockCounts(Object.values(metadataByQuestionId)),
+    progressByBlock: Object.freeze(Object.fromEntries(Object.entries(progressByBlock).map(([key, block]) => {
+      const entry = block && typeof block === 'object' ? block : {};
+      return [key, Object.freeze({
+        blockNumber: Number(entry.blockNumber || key || 0),
+        total: Number(entry.total || entry.itemCount || entry.questionCount || entry.itemsCount || 0),
+        questionIds: Array.isArray(entry.questionIds) ? entry.questionIds.length : 0,
+        answeredQuestionIds: Array.isArray(entry.answeredQuestionIds) ? entry.answeredQuestionIds.length : 0,
+      })];
+    }))),
+  });
+}
+
+function coercePositiveInteger(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function getSnapshotBlockNumber(snapshot) {
+  const metadata = snapshot && snapshot.metadata && typeof snapshot.metadata === 'object' ? snapshot.metadata : {};
+  return coercePositiveInteger((snapshot && snapshot.blockNumber) || metadata.blockNumber, 0);
+}
+
+function snapshotHasUserState(snapshot) {
+  return Boolean(
+    normalizeString(snapshot && snapshot.selectedAnswerId, '')
+      || (Array.isArray(snapshot && snapshot.choices) && snapshot.choices.some((choice) => choice && choice.selected))
+      || Number(snapshot && snapshot.timingMs || 0) > 0
+      || normalizeString(snapshot && snapshot.notes, '')
+      || (snapshot && snapshot.annotations && typeof snapshot.annotations === 'object'
+        && ((Array.isArray(snapshot.annotations.highlights) && snapshot.annotations.highlights.length)
+          || (Array.isArray(snapshot.annotations.strikeouts) && snapshot.annotations.strikeouts.length)))
+  );
+}
+
+function snapshotHasLiveBlockEvidence(snapshot) {
+  const metadata = snapshot && snapshot.metadata && typeof snapshot.metadata === 'object' ? snapshot.metadata : {};
+  const contentSource = normalizeString(metadata.questionContentSource || metadata.contentSource, '').toLowerCase();
+  return Boolean(metadata.capturedFromDom)
+    || contentSource === 'dom-current-item'
+    || contentSource === 'adapter-current-content';
+}
+
+function getSnapshotItemIndex(snapshot, fallback = 0) {
+  const metadata = snapshot && snapshot.metadata && typeof snapshot.metadata === 'object' ? snapshot.metadata : {};
+  return coercePositiveInteger((snapshot && snapshot.itemIndex) || metadata.itemIndex, fallback);
+}
+
+function countBlockNumbers(values) {
+  const counts = new Map();
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const blockNumber = coercePositiveInteger(value, 0);
+    if (blockNumber) {
+      counts.set(blockNumber, (counts.get(blockNumber) || 0) + 1);
+    }
+  });
+  return counts;
+}
+
+function uniquePositiveIntegers(values) {
+  const seen = new Set();
+  const result = [];
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const number = coercePositiveInteger(value, 0);
+    if (number && !seen.has(number)) {
+      seen.add(number);
+      result.push(number);
+    }
+  });
+  return result.sort((left, right) => left - right);
+}
+
+function getDominantBlockNumberFromCounts(counts) {
+  if (!counts || !counts.size) {
+    return 0;
+  }
+  return Array.from(counts.entries()).sort((left, right) => {
+    if (right[1] !== left[1]) {
+      return right[1] - left[1];
+    }
+    return left[0] - right[0];
+  })[0][0];
+}
+
+function parseExplicitBlockNumber(value) {
+  const text = normalizeString(value, '');
+  if (!text || /\b(?:all|full|entire|whole|complete)\b/i.test(text)) {
+    return 0;
+  }
+  if (/^\d+$/.test(text)) {
+    return coercePositiveInteger(text, 0);
+  }
+  const match = text.match(/\bblock\s*(\d+)\b/i);
+  return match ? coercePositiveInteger(match[1], 0) : 0;
+}
+
+function getDominantAttemptMetadataBlockNumber(attempt) {
+  const source = attempt && attempt.source && typeof attempt.source === 'object' ? attempt.source : {};
+  const metadataByQuestionId = source.itemMetadataByQuestionId && typeof source.itemMetadataByQuestionId === 'object' ? source.itemMetadataByQuestionId : {};
+  return getDominantBlockNumberFromCounts(countBlockNumbers(Object.values(metadataByQuestionId).map((metadata) => metadata && metadata.blockNumber)));
+}
+
+function getAttemptMetadataBlockNumbers(attempt) {
+  const source = attempt && attempt.source && typeof attempt.source === 'object' ? attempt.source : {};
+  const metadataByQuestionId = source.itemMetadataByQuestionId && typeof source.itemMetadataByQuestionId === 'object' ? source.itemMetadataByQuestionId : {};
+  return uniquePositiveIntegers(Object.values(metadataByQuestionId).map((metadata) => metadata && metadata.blockNumber));
+}
+
+function getSingleProgressBlockNumber(attempt) {
+  const source = attempt && attempt.source && typeof attempt.source === 'object' ? attempt.source : {};
+  const progress = source.progress && typeof source.progress === 'object' ? source.progress : {};
+  const byBlock = progress.byBlock && typeof progress.byBlock === 'object' ? progress.byBlock : {};
+  const blockNumbers = uniquePositiveIntegers(Object.entries(byBlock).map(([key, block]) => {
+    const entry = block && typeof block === 'object' ? block : {};
+    const blockNumber = coercePositiveInteger(entry.blockNumber || entry.block || entry.index, coercePositiveInteger(key, 0));
+    const hasEvidence = coercePositiveInteger(entry.total || entry.itemCount || entry.questionCount || entry.itemsCount, 0)
+      || (Array.isArray(entry.questionIds) ? entry.questionIds.length : 0)
+      || (Array.isArray(entry.answeredQuestionIds) ? entry.answeredQuestionIds.length : 0);
+    return hasEvidence ? blockNumber : 0;
+  }));
+  return blockNumbers.length === 1 ? blockNumbers[0] : 0;
+}
+
+function getBlockMetadataEntries(attempt) {
+  return (Array.isArray(attempt && attempt.blockMetadata) ? attempt.blockMetadata : [])
+    .map((block, index) => {
+      const entry = block && typeof block === 'object' ? block : {};
+      const blockNumber = coercePositiveInteger(entry.blockNumber || entry.block || entry.index, index + 1);
+      const itemCount = coercePositiveInteger(entry.itemCount || entry.questionCount || entry.itemsCount, 0);
+      return Object.freeze({ blockNumber, itemCount });
+    })
+    .filter((block) => block.blockNumber && block.itemCount);
+}
+
+function getSingleBlockMetadataNumber(attempt) {
+  const blockNumbers = uniquePositiveIntegers(getBlockMetadataEntries(attempt).map((block) => block.blockNumber));
+  return blockNumbers.length === 1 ? blockNumbers[0] : 0;
+}
+
+function getReviewBlockMetadataRepairNumber(attempt, metadataBlockNumbers) {
+  const sourceBlocks = uniquePositiveIntegers(metadataBlockNumbers);
+  if (sourceBlocks.length !== 1 || coercePositiveInteger(attempt && attempt.questionCount, 0) > 40) {
+    return 0;
+  }
+  const sourceBlockNumber = sourceBlocks[0];
+  const expectedCount = Math.min(40, Math.max(coercePositiveInteger(attempt && attempt.questionCount, 0), 1));
+  const candidates = getBlockMetadataEntries(attempt)
+    .filter((block) => block.blockNumber !== sourceBlockNumber)
+    .sort((left, right) => {
+      const leftFull = left.itemCount >= expectedCount ? 1 : 0;
+      const rightFull = right.itemCount >= expectedCount ? 1 : 0;
+      if (rightFull !== leftFull) {
+        return rightFull - leftFull;
+      }
+      return right.blockNumber - left.blockNumber;
+    });
+  return candidates.length ? candidates[0].blockNumber : 0;
+}
+
+function getRecordedReviewBlockNumber(attempt) {
+  const source = attempt && attempt.source && typeof attempt.source === 'object' ? attempt.source : {};
+  return getSingleProgressBlockNumber(attempt)
+    || getSingleBlockMetadataNumber(attempt)
+    || coercePositiveInteger(source.activeBlock || source.currentBlock, 0);
+}
+
+function inferReviewBlockNumberFromOwnSnapshots(attempt, ownSnapshots) {
+  const ownList = Array.isArray(ownSnapshots) ? ownSnapshots : [];
+  const liveContentSnapshots = ownList.filter(snapshotHasLiveBlockEvidence);
+  const userStateSnapshots = ownList.filter(snapshotHasUserState);
+  const snapshots = liveContentSnapshots.length
+    ? liveContentSnapshots
+    : (userStateSnapshots.length ? userStateSnapshots : ownList.filter((snapshot) => normalizeString(snapshot && (snapshot.renderedHtml || snapshot.promptHtml), '')));
+  if (!snapshots.length || coercePositiveInteger(attempt && attempt.questionCount, 0) > 40) {
+    return 0;
+  }
+  const snapshotCounts = countBlockNumbers(snapshots.map(getSnapshotBlockNumber));
+  if (snapshotCounts.size !== 1) {
+    return 0;
+  }
+  return getDominantBlockNumberFromCounts(snapshotCounts);
+}
+
+function rebaseProgressForReviewBlock(progress, blockNumber, questionIds, questionCount) {
+  const sourceProgress = progress && typeof progress === 'object' ? progress : {};
+  const byBlock = sourceProgress.byBlock && typeof sourceProgress.byBlock === 'object' ? sourceProgress.byBlock : {};
+  const firstBlock = Object.values(byBlock).find((entry) => entry && typeof entry === 'object') || {};
+  const total = Math.min(40, Math.max(
+    coercePositiveInteger(questionCount, 0),
+    coercePositiveInteger(firstBlock.total || firstBlock.itemCount || firstBlock.questionCount || firstBlock.itemsCount, 0),
+    Array.isArray(questionIds) ? questionIds.length : 0
+  ));
+  return Object.freeze({
+    ...sourceProgress,
+    byBlock: Object.freeze({
+      [blockNumber]: Object.freeze({
+        ...firstBlock,
+        blockNumber,
+        total,
+        questionIds: Object.freeze(Array.isArray(questionIds) ? questionIds.slice(0, total || questionIds.length) : []),
+        answeredQuestionIds: Object.freeze(Array.isArray(firstBlock.answeredQuestionIds) ? firstBlock.answeredQuestionIds : []),
+      }),
+    }),
+    overall: Object.freeze({
+      ...(sourceProgress.overall && typeof sourceProgress.overall === 'object' ? sourceProgress.overall : {}),
+      total,
+    }),
+  });
+}
+
+function rebaseAttemptForReviewBlock(attempt, blockNumber) {
+  if (!attempt || !blockNumber) {
+    return attempt;
+  }
+  const source = attempt.source && typeof attempt.source === 'object' ? attempt.source : {};
+  const metadataByQuestionId = source.itemMetadataByQuestionId && typeof source.itemMetadataByQuestionId === 'object' ? source.itemMetadataByQuestionId : {};
+  const timingByQuestionId = attempt.timingByQuestionId && typeof attempt.timingByQuestionId === 'object' ? attempt.timingByQuestionId : {};
+  const questionIds = Array.isArray(attempt.questionIds) ? attempt.questionIds : [];
+  const itemCount = Math.min(40, Math.max(questionIds.length, coercePositiveInteger(attempt.questionCount, 0), 0));
+  const rebasedMetadata = Object.freeze(Object.fromEntries(questionIds.map((questionId, index) => {
+    const metadata = metadataByQuestionId[questionId] && typeof metadataByQuestionId[questionId] === 'object' ? metadataByQuestionId[questionId] : {};
+    const timing = timingByQuestionId[questionId] && typeof timingByQuestionId[questionId] === 'object' ? timingByQuestionId[questionId] : {};
+    return [questionId, Object.freeze({
+      ...metadata,
+      questionId,
+      blockNumber,
+      itemIndex: coercePositiveInteger(metadata.itemIndex || timing.itemIndex, index + 1),
+    })];
+  })));
+  return Object.freeze({
+    ...attempt,
+    launchedScope: Object.freeze({
+      ...(attempt.launchedScope && typeof attempt.launchedScope === 'object' ? attempt.launchedScope : {}),
+      block: String(blockNumber),
+      selectedBlock: String(blockNumber),
+      launchedBlock: String(blockNumber),
+    }),
+    blockMetadata: Object.freeze([Object.freeze({ blockNumber, itemCount, label: `Block ${blockNumber}` })]),
+    timingByQuestionId: Object.freeze(Object.fromEntries(Object.entries(timingByQuestionId).map(([questionId, timing]) => [questionId, Object.freeze({
+      ...(timing && typeof timing === 'object' ? timing : {}),
+      blockNumber,
+    })]))),
+    source: Object.freeze({
+      ...source,
+      activeBlock: blockNumber,
+      currentBlock: blockNumber,
+      progress: rebaseProgressForReviewBlock(source.progress, blockNumber, questionIds, itemCount),
+      itemMetadataByQuestionId: rebasedMetadata,
+      reviewBlockRepair: Object.freeze({
+        blockNumber,
+        previousDominantMetadataBlock: getDominantAttemptMetadataBlockNumber(attempt),
+        repairedAt: new Date().toISOString(),
+      }),
+    }),
+  });
+}
+
+function chooseReviewBlockRepairNumber(attempt, ownSnapshots = []) {
+  const metadataBlockNumbers = getAttemptMetadataBlockNumbers(attempt);
+  const recordedBlockNumber = getRecordedReviewBlockNumber(attempt);
+  if (recordedBlockNumber && metadataBlockNumbers.length === 1 && metadataBlockNumbers[0] !== recordedBlockNumber) {
+    return recordedBlockNumber;
+  }
+
+  const snapshotBlockNumber = inferReviewBlockNumberFromOwnSnapshots(attempt, ownSnapshots);
+  if (snapshotBlockNumber) {
+    return snapshotBlockNumber;
+  }
+  return getReviewBlockMetadataRepairNumber(attempt, metadataBlockNumbers);
+}
+
+function prepareAttemptForReview(attempt, ownSnapshots = []) {
+  const reviewBlockNumber = chooseReviewBlockRepairNumber(attempt, ownSnapshots);
+  if (!reviewBlockNumber) {
+    return attempt;
+  }
+  const metadataBlockNumbers = getAttemptMetadataBlockNumbers(attempt);
+  const scope = attempt && attempt.launchedScope && typeof attempt.launchedScope === 'object' ? attempt.launchedScope : {};
+  const explicitScopeBlockNumber = parseExplicitBlockNumber(scope.block) || parseExplicitBlockNumber(scope.selectedBlock) || parseExplicitBlockNumber(scope.launchedBlock) || parseExplicitBlockNumber(scope.testDefinitionDisplayName) || parseExplicitBlockNumber(scope.section);
+  const alreadyRebased = metadataBlockNumbers.length === 1 && metadataBlockNumbers[0] === reviewBlockNumber
+    && (!explicitScopeBlockNumber || explicitScopeBlockNumber === reviewBlockNumber);
+  if (alreadyRebased) {
+    return attempt;
+  }
+  return rebaseAttemptForReviewBlock(attempt, reviewBlockNumber);
+}
+
+function getChoiceIndexByAnswerId(choices, answerId) {
+  const normalized = normalizeString(answerId, '').toLowerCase();
+  if (!normalized) {
+    return 0;
+  }
+  const list = Array.isArray(choices) ? choices : [];
+  const direct = list.find((choice) => normalizeString(choice && choice.id, '').toLowerCase() === normalized);
+  if (direct) {
+    return Number(direct.index || list.indexOf(direct) + 1) || 0;
+  }
+  const optionMatch = normalized.match(/(?:^|\b)(?:option[-_\s]*)?(\d+)(?:\b|$)/);
+  return optionMatch ? Number(optionMatch[1]) || 0 : 0;
+}
+
+function getSelectedChoiceIndex(snapshot) {
+  const choices = Array.isArray(snapshot && snapshot.choices) ? snapshot.choices : [];
+  const selectedChoice = choices.find((choice) => choice && choice.selected);
+  if (selectedChoice) {
+    return Number(selectedChoice.index || choices.indexOf(selectedChoice) + 1) || 0;
+  }
+  return getChoiceIndexByAnswerId(choices, snapshot && snapshot.selectedAnswerId);
+}
+
+function mapSelectedAnswerIdForSnapshot(sourceSnapshot, targetSnapshot) {
+  const rawSelectedAnswerId = normalizeString(sourceSnapshot && sourceSnapshot.selectedAnswerId, '');
+  if (!rawSelectedAnswerId) {
+    return '';
+  }
+  const targetChoices = Array.isArray(targetSnapshot && targetSnapshot.choices) ? targetSnapshot.choices : [];
+  if (targetChoices.some((choice) => normalizeString(choice && choice.id, '').toLowerCase() === rawSelectedAnswerId.toLowerCase())) {
+    return rawSelectedAnswerId;
+  }
+  const sourceIndex = getSelectedChoiceIndex(sourceSnapshot);
+  if (sourceIndex > 0) {
+    const targetChoice = targetChoices.find((choice, index) => Number(choice && choice.index || index + 1) === sourceIndex);
+    if (targetChoice && normalizeString(targetChoice.id, '')) {
+      return normalizeString(targetChoice.id, '');
+    }
+  }
+  return rawSelectedAnswerId;
+}
+
+function mergeSnapshotChoicesWithSelection(targetChoices, selectedAnswerId) {
+  const choices = Array.isArray(targetChoices) ? targetChoices : [];
+  const selectedIndex = getChoiceIndexByAnswerId(choices, selectedAnswerId);
+  const normalizedSelectedAnswerId = normalizeString(selectedAnswerId, '').toLowerCase();
+  return Object.freeze(choices.map((choice, index) => Object.freeze({
+    ...choice,
+    selected: Boolean(normalizedSelectedAnswerId && normalizeString(choice && choice.id, '').toLowerCase() === normalizedSelectedAnswerId)
+      || Boolean(selectedIndex && Number(choice && choice.index || index + 1) === selectedIndex),
+  })));
+}
+
+function mergeQBankSnapshotWithOwnSnapshot(qbankSnapshot, ownSnapshot = null) {
+  if (!ownSnapshot) {
+    return qbankSnapshot;
+  }
+  const selectedAnswerId = mapSelectedAnswerIdForSnapshot(ownSnapshot, qbankSnapshot)
+    || normalizeString(qbankSnapshot && qbankSnapshot.selectedAnswerId, '');
+  return Object.freeze({
+    ...qbankSnapshot,
+    selectedAnswerId,
+    marked: Boolean((qbankSnapshot && qbankSnapshot.marked) || (ownSnapshot && ownSnapshot.marked)),
+    notes: normalizeString(ownSnapshot && ownSnapshot.notes, normalizeString(qbankSnapshot && qbankSnapshot.notes, '')),
+    annotations: ownSnapshot && ownSnapshot.annotations ? ownSnapshot.annotations : (qbankSnapshot && qbankSnapshot.annotations),
+    timingMs: Number(ownSnapshot && ownSnapshot.timingMs || 0) || Number(qbankSnapshot && qbankSnapshot.timingMs || 0) || 0,
+    choices: selectedAnswerId ? mergeSnapshotChoicesWithSelection(qbankSnapshot && qbankSnapshot.choices, selectedAnswerId) : qbankSnapshot.choices,
+    snapshot: Object.freeze({
+      ...((qbankSnapshot && qbankSnapshot.snapshot) || {}),
+      reviewMerge: Object.freeze({
+        selectedFromOwnSnapshot: Boolean(selectedAnswerId),
+        ownSnapshotId: normalizeString(ownSnapshot && ownSnapshot.id, ''),
+      }),
+    }),
+  });
+}
+
+function snapshotPositionKey(snapshot) {
+  const metadata = snapshot && snapshot.metadata && typeof snapshot.metadata === 'object' ? snapshot.metadata : {};
+  const blockNumber = Number((snapshot && snapshot.blockNumber) || metadata.blockNumber || 0) || 0;
+  const itemIndex = Number((snapshot && snapshot.itemIndex) || metadata.itemIndex || 0) || 0;
+  return blockNumber && itemIndex ? `${blockNumber}\u0000${itemIndex}` : '';
+}
+
+function mergeReviewSnapshots(qbankSnapshots, ownSnapshots) {
+  const ownList = Array.isArray(ownSnapshots) ? ownSnapshots : [];
+  const qbankList = Array.isArray(qbankSnapshots) ? qbankSnapshots : [];
+  const ownByQuestionId = new Map(ownList.map((snapshot) => [normalizeString(snapshot && snapshot.questionId, ''), snapshot]));
+  const ownByPosition = new Map();
+  ownList.forEach((snapshot) => {
+    const key = snapshotPositionKey(snapshot);
+    if (key && !ownByPosition.has(key)) {
+      ownByPosition.set(key, snapshot);
+    }
+  });
+  const qbankQuestionIds = new Set(qbankList.map((snapshot) => normalizeString(snapshot && snapshot.questionId, '')).filter(Boolean));
+  const qbankPositionKeys = new Set(qbankList.map(snapshotPositionKey).filter(Boolean));
+  return qbankList
+    .map((snapshot) => mergeQBankSnapshotWithOwnSnapshot(
+      snapshot,
+      ownByQuestionId.get(normalizeString(snapshot && snapshot.questionId, '')) || ownByPosition.get(snapshotPositionKey(snapshot))
+    ))
+    .concat(ownList.filter((snapshot) => !qbankQuestionIds.has(normalizeString(snapshot && snapshot.questionId, '')) && !qbankPositionKeys.has(snapshotPositionKey(snapshot))));
+}
+
+function summarizeSnapshotsForDebug(snapshots) {
+  const list = Array.isArray(snapshots) ? snapshots : [];
+  return Object.freeze({
+    count: list.length,
+    blockCounts: summarizeBlockCounts(list.map((snapshot) => Object.freeze({
+      blockNumber: Number((snapshot && snapshot.blockNumber) || (snapshot && snapshot.metadata && snapshot.metadata.blockNumber) || 0),
+    }))),
+    qbankOriginalBlockCounts: summarizeBlockCounts(list.map((snapshot) => Object.freeze({
+      blockNumber: Number(snapshot && snapshot.metadata && (snapshot.metadata.qbankCacheOriginalBlockNumber || snapshot.metadata.qbankFallbackOriginalBlockNumber) || 0),
+    }))),
+    itemIndexesByBlock: Object.freeze(Object.fromEntries(Object.entries(list.reduce((accumulator, snapshot) => {
+      const blockNumber = Number((snapshot && snapshot.blockNumber) || (snapshot && snapshot.metadata && snapshot.metadata.blockNumber) || 0) || 0;
+      const itemIndex = Number((snapshot && snapshot.itemIndex) || (snapshot && snapshot.metadata && snapshot.metadata.itemIndex) || 0) || 0;
+      const key = blockNumber || 'unknown';
+      if (!accumulator[key]) accumulator[key] = [];
+      if (itemIndex) accumulator[key].push(itemIndex);
+      return accumulator;
+    }, {})).map(([blockNumber, indexes]) => [blockNumber, Object.freeze({
+      min: indexes.length ? Math.min(...indexes) : 0,
+      max: indexes.length ? Math.max(...indexes) : 0,
+      count: indexes.length,
+    })]))),
+  });
+}
+
+function debugReviewLog(adapterWindow, label, payload) {
+  try {
+    const targetConsole = adapterWindow && adapterWindow.console ? adapterWindow.console : console;
+    const logger = targetConsole.info || targetConsole.log;
+    logger.call(targetConsole, '[Free120 Review Debug]', label, payload);
+  } catch (_error) {}
+}
+
 function buildScoreSummaryHtml(scoreSummary) {
   const perBlock = Array.isArray(scoreSummary && scoreSummary.perBlock) ? scoreSummary.perBlock : [];
   const rows = [
@@ -121,6 +579,20 @@ function buildReviewRuntimeScript(model) {
   const STATUS_SYMBOL = { correct: '✓', incorrect: '✕', omitted: '–', unknown: '?' };
   const OPTION_MARK = { correct: '✓', wrong: '✕', unknown: '?' };
   const state = { filter: 'all', block: 'all', currentQuestionId: MODEL.questions[0] ? MODEL.questions[0].questionId : '' };
+  const DEBUG = Boolean(window.__FREE120_REVIEW_DEBUG__);
+
+  function debugLog(label, payload) {
+    if (!DEBUG) return;
+    try { console.info('[Free120 Review Debug]', label, payload); } catch (_error) {}
+  }
+  function summarizeQuestionsForDebug(questions) {
+    const counts = {};
+    (Array.isArray(questions) ? questions : []).forEach((question) => {
+      const block = String(question && question.blockNumber || 'unknown');
+      counts[block] = (counts[block] || 0) + 1;
+    });
+    return { count: (Array.isArray(questions) ? questions : []).length, blockCounts: counts, first: (Array.isArray(questions) ? questions : []).slice(0, 5).map((question) => ({ questionId: question.questionId, blockNumber: question.blockNumber, itemIndex: question.itemIndex, status: question.status })) };
+  }
 
   function qs(selector, root) { return (root || document).querySelector(selector); }
   function qsa(selector, root) { return Array.from((root || document).querySelectorAll(selector)); }
@@ -393,7 +865,7 @@ function buildReviewRuntimeScript(model) {
       row.appendChild(el('span', { className: 'f120-review-nav-status f120-review-nav-status--' + question.status, text: STATUS_SYMBOL[question.status] || '•' }));
       row.appendChild(el('span', { className: 'index', text: question.itemIndex }));
       row.appendChild(el('span', { className: 'hoverNote', text: question.marked ? '★' : '' }));
-      row.addEventListener('click', () => { state.currentQuestionId = question.questionId; render(); });
+      row.addEventListener('click', () => { debugLog('nav-click', { questionId: question.questionId, blockNumber: question.blockNumber, itemIndex: question.itemIndex }); state.currentQuestionId = question.questionId; render(); });
       row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); state.currentQuestionId = question.questionId; render(); } });
       nav.appendChild(row);
     });
@@ -405,6 +877,7 @@ function buildReviewRuntimeScript(model) {
     sortedBlockNumbers().forEach((blockNumber) => select.appendChild(el('option', { text: 'Block ' + blockNumber, attrs: { value: blockNumber } })));
     select.value = Array.from(select.options).some((option) => option.value === previous) ? previous : 'all';
     state.block = select.value;
+    debugLog('block-options', { options: Array.from(select.options).map((option) => option.value), selected: state.block, modelBlocks: sortedBlockNumbers() });
   }
   function move(delta) {
     const visible = visibleQuestions();
@@ -412,9 +885,11 @@ function buildReviewRuntimeScript(model) {
     const index = Math.max(0, visible.findIndex((question) => question.questionId === state.currentQuestionId));
     const nextIndex = Math.min(visible.length - 1, Math.max(0, index + delta));
     state.currentQuestionId = visible[nextIndex].questionId;
+    debugLog('move', { delta, currentQuestionId: state.currentQuestionId, visible: summarizeQuestionsForDebug(visible) });
     render();
   }
   function render() {
+    const beforeQuestionId = state.currentQuestionId;
     const question = ensureVisibleQuestion();
     renderNav();
     renderHeader(question);
@@ -422,6 +897,7 @@ function buildReviewRuntimeScript(model) {
     renderDetails(question);
     const visible = visibleQuestions();
     const index = question ? visible.findIndex((item) => item.questionId === question.questionId) : -1;
+    debugLog('render', { state: { ...state }, beforeQuestionId, ensuredQuestionId: question && question.questionId, current: question ? { questionId: question.questionId, blockNumber: question.blockNumber, itemIndex: question.itemIndex, status: question.status } : null, index, visible: summarizeQuestionsForDebug(visible) });
     qs('#f120-review-prev').disabled = index <= 0;
     qs('#f120-review-next').disabled = index < 0 || index >= visible.length - 1;
   }
@@ -451,8 +927,9 @@ function buildReviewRuntimeScript(model) {
   function attachControls() {
     hydrateStoredShell();
     renderBlockOptions();
-    qs('#f120-review-filter').addEventListener('change', (event) => { state.filter = event.target.value; render(); });
-    qs('#f120-review-block-filter').addEventListener('change', (event) => { state.block = event.target.value; render(); });
+    debugLog('runtime-start', { model: summarizeQuestionsForDebug(MODEL.questions), diagnostics: window.__FREE120_REVIEW_DEBUG__ || null });
+    qs('#f120-review-filter').addEventListener('change', (event) => { state.filter = event.target.value; debugLog('filter-change', { filter: state.filter }); render(); });
+    qs('#f120-review-block-filter').addEventListener('change', (event) => { state.block = event.target.value; debugLog('block-change', { block: state.block }); render(); });
     qs('#f120-review-prev').addEventListener('click', () => move(-1));
     qs('#f120-review-next').addEventListener('click', () => move(1));
     document.addEventListener('keydown', (event) => {
@@ -466,8 +943,39 @@ function buildReviewRuntimeScript(model) {
 })();`;
 }
 
-function buildReviewHtml(attempt, snapshots = []) {
+function buildReviewHtml(attempt, snapshots = [], options = {}) {
   const model = buildReviewModel(attempt, snapshots);
+  const debugDiagnostics = options.debugDiagnostics ? Object.freeze({
+    openedAt: new Date().toISOString(),
+    attemptId: normalizeString(attempt && attempt.id, ''),
+    inputAttempt: summarizeAttemptBlocksForDebug(attempt),
+    reviewBlockRepair: attempt && attempt.source && attempt.source.reviewBlockRepair ? Object.freeze({ ...attempt.source.reviewBlockRepair }) : null,
+    inputSnapshots: summarizeSnapshotsForDebug(snapshots),
+    model: Object.freeze({
+      questionCount: model.questions.length,
+      questionIds: summarizeQuestionIds(model.questions.map((question) => question.questionId)),
+      blockCounts: summarizeBlockCounts(model.questions),
+      perBlock: Object.freeze((Array.isArray(model.scoreSummary && model.scoreSummary.perBlock) ? model.scoreSummary.perBlock : []).map((block) => Object.freeze({
+        blockNumber: Number(block && block.blockNumber || 0),
+        total: Number(block && block.total || 0),
+        answered: Number(block && block.answered || 0),
+        correct: Number(block && block.correct || 0),
+        omitted: Number(block && block.omitted || 0),
+      }))),
+      firstQuestions: Object.freeze(model.questions.slice(0, 8).map((question) => Object.freeze({
+        questionId: question.questionId,
+        blockNumber: question.blockNumber,
+        itemIndex: question.itemIndex,
+        status: question.status,
+        hasRenderedHtml: Boolean(question.snapshot && question.snapshot.renderedHtml),
+        renderedHtmlLength: question.snapshot && question.snapshot.renderedHtml ? question.snapshot.renderedHtml.length : 0,
+        snapshotBlockNumber: question.snapshot && question.snapshot.metadata ? question.snapshot.metadata.blockNumber : 0,
+        qbankOriginalBlockNumber: question.snapshot && question.snapshot.metadata ? (question.snapshot.metadata.qbankCacheOriginalBlockNumber || question.snapshot.metadata.qbankFallbackOriginalBlockNumber || 0) : 0,
+        qbankOriginalQuestionId: question.snapshot && question.snapshot.metadata ? (question.snapshot.metadata.qbankCacheOriginalQuestionId || question.snapshot.metadata.qbankFallbackOriginalQuestionId || '') : '',
+        qbankMatchSource: question.snapshot && question.snapshot.metadata ? question.snapshot.metadata.qbankCacheMatchSource || '' : '',
+      }))),
+    }),
+  }) : null;
   const title = `Free120 Review${model.attempt.id ? ` · ${model.attempt.id}` : ''}`;
   return `<!doctype html>
 <html lang="en">
@@ -479,17 +987,20 @@ function buildReviewHtml(attempt, snapshots = []) {
 </head>
 <body>
   ${buildStaticShell(model)}
-  <script>${buildReviewRuntimeScript(model)}</script>
+  <script>${debugDiagnostics ? `window.__FREE120_REVIEW_DEBUG__ = ${safeJsonForScript(debugDiagnostics)};\nconsole.info('[Free120 Review Debug]', 'diagnostics', window.__FREE120_REVIEW_DEBUG__);\n` : ''}${buildReviewRuntimeScript(model)}</script>
 </body>
 </html>`;
 }
 
-function createReviewBlobUrl(attempt, snapshots = [], adapterWindow = window) {
-  const html = buildReviewHtml(attempt, snapshots);
+function createReviewBlob(attempt, snapshots = [], adapterWindow = window, options = {}) {
+  const html = buildReviewHtml(attempt, snapshots, options);
   const BlobCtor = adapterWindow.Blob || Blob;
+  return new BlobCtor([html], { type: 'text/html;charset=utf-8' });
+}
+
+function createReviewBlobUrl(attempt, snapshots = [], adapterWindow = window, options = {}) {
   const URLObject = adapterWindow.URL || URL;
-  const blob = new BlobCtor([html], { type: 'text/html;charset=utf-8' });
-  return URLObject.createObjectURL(blob);
+  return URLObject.createObjectURL(createReviewBlob(attempt, snapshots, adapterWindow, options));
 }
 
 async function loadQBankFallbackSnapshots(storage, attempt, ownSnapshots) {
@@ -521,10 +1032,24 @@ async function openReviewTab(options = {}) {
       throw new Error(`Attempt not found: ${attemptId}`);
     }
     const ownSnapshots = await storage.listQuestionSnapshots(attemptId);
-    const qbankSnapshots = await loadQBankSnapshotsForAttempt(storage, attempt, ownSnapshots);
-    const qbankQuestionIds = new Set(qbankSnapshots.map((snapshot) => normalizeString(snapshot && snapshot.questionId, '')).filter(Boolean));
-    const snapshots = qbankSnapshots.concat(ownSnapshots.filter((snapshot) => !qbankQuestionIds.has(normalizeString(snapshot && snapshot.questionId, ''))));
-    const url = createReviewBlobUrl(attempt, snapshots, adapterWindow);
+    const reviewAttempt = prepareAttemptForReview(attempt, ownSnapshots);
+    const qbankSnapshots = await loadQBankSnapshotsForAttempt(storage, reviewAttempt, ownSnapshots);
+    const snapshots = mergeReviewSnapshots(qbankSnapshots, ownSnapshots);
+    const debugDiagnostics = Boolean(options.debugDiagnostics || options.debugReview);
+    if (debugDiagnostics) {
+      debugReviewLog(adapterWindow, 'openReviewTab inputs', Object.freeze({
+        debugDiagnostics,
+        attemptId,
+        attempt: summarizeAttemptBlocksForDebug(reviewAttempt),
+        originalAttempt: summarizeAttemptBlocksForDebug(attempt),
+        ownSnapshots: summarizeSnapshotsForDebug(ownSnapshots),
+        qbankSnapshots: summarizeSnapshotsForDebug(qbankSnapshots),
+        mergedSnapshots: summarizeSnapshotsForDebug(snapshots),
+      }));
+    }
+    const blob = createReviewBlob(reviewAttempt, snapshots, adapterWindow, { debugDiagnostics });
+    const URLObject = adapterWindow.URL || URL;
+    const url = URLObject.createObjectURL(blob);
     try {
       opened.location.href = url;
     } catch (_error) {
@@ -532,7 +1057,7 @@ async function openReviewTab(options = {}) {
         adapterWindow.open(url, '_blank', 'noopener,noreferrer');
       }
     }
-    return Object.freeze({ url, window: opened, attemptId, snapshotCount: snapshots.length, qbankFallbackSnapshotCount: qbankSnapshots.length });
+    return Object.freeze({ url, blob, window: opened, attemptId, snapshotCount: snapshots.length, qbankFallbackSnapshotCount: qbankSnapshots.length });
   } catch (error) {
     try {
       if (opened.document && opened.document.body) {
@@ -547,6 +1072,7 @@ async function openReviewTab(options = {}) {
 export {
   REVIEW_PAGE_VERSION,
   buildReviewHtml,
+  createReviewBlob,
   createReviewBlobUrl,
   isQBankCacheAttempt,
   loadQBankFallbackSnapshots,

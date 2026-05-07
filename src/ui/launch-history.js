@@ -567,6 +567,15 @@ function injectLaunchHistoryStyles(adapterDocument) {
       letter-spacing: 0.01em;
       padding: 8px 12px;
     }
+    .f120-launch-history__button:disabled {
+      cursor: not-allowed;
+      opacity: 0.55;
+    }
+    .f120-launch-history__button--danger {
+      background: #fff7ed;
+      border-color: #fdba74;
+      color: #9a3412;
+    }
     .f120-launch-history__button:hover,
     .f120-launch-history__action:hover:not(:disabled),
     .f120-launch-history__file-label:hover {
@@ -937,6 +946,26 @@ function setMessage(messageElement, message, kind = 'info') {
   messageElement.textContent = text;
 }
 
+function clearNamespacedStorageArea(storageArea) {
+  if (!storageArea || typeof storageArea.length !== 'number') {
+    return 0;
+  }
+  const keys = [];
+  for (let index = 0; index < storageArea.length; index += 1) {
+    const key = normalizeString(typeof storageArea.key === 'function' ? storageArea.key(index) : '', '');
+    if (key && key.startsWith(SCRIPT.STORAGE_NAMESPACE)) {
+      keys.push(key);
+    }
+  }
+  keys.forEach((key) => storageArea.removeItem(key));
+  return keys.length;
+}
+
+function clearHelperWebStorage(adapterWindow) {
+  return clearNamespacedStorageArea(adapterWindow && adapterWindow.localStorage)
+    + clearNamespacedStorageArea(adapterWindow && adapterWindow.sessionStorage);
+}
+
 function appendDetailRow(adapterDocument, container, label, value) {
   container.appendChild(createElement(adapterDocument, 'div', {
     className: 'f120-launch-history__qbank-storage-label',
@@ -999,7 +1028,13 @@ function buildLaunchHistoryDom(adapterDocument) {
     text: 'Capture QBank',
     attributes: { 'aria-haspopup': 'dialog', 'aria-expanded': 'false' },
   });
-  triggerGroup.append(triggerButton, qbankCaptureButton);
+  const cleanCacheButton = createElement(adapterDocument, 'button', {
+    className: 'f120-launch-history__button f120-launch-history__button--danger',
+    type: 'button',
+    text: 'Clean Cache',
+    attributes: { 'aria-label': 'Clean Free120 Helper cache', title: 'Delete all local Free120 Helper history, snapshots, and QBank cache.' },
+  });
+  triggerGroup.append(triggerButton, qbankCaptureButton, cleanCacheButton);
   const backdrop = createElement(adapterDocument, 'div', {
     className: 'f120-launch-history__backdrop',
     hidden: true,
@@ -1137,6 +1172,7 @@ function buildLaunchHistoryDom(adapterDocument) {
     root,
     triggerButton,
     qbankCaptureButton,
+    cleanCacheButton,
     backdrop,
     panel,
     qbankPanel,
@@ -1168,6 +1204,9 @@ function createLaunchHistory(options = {}) {
   if (!storage || typeof storage.listAttempts !== 'function') {
     throw new Error('Launch history requires storage with listAttempts().');
   }
+  if (!hasFunction(storage, 'clearAllHistory') && !hasFunction(storage, 'deleteAttempt')) {
+    throw new Error('Launch history requires storage cleanup support.');
+  }
 
   let destroyed = false;
   let panelOpen = false;
@@ -1190,6 +1229,7 @@ function createLaunchHistory(options = {}) {
       dom.importInput,
       dom.qbankCaptureButton,
       dom.qbankStartButton,
+      dom.cleanCacheButton,
     ].forEach((element) => {
       if (element) {
         element.disabled = disabled;
@@ -1424,6 +1464,72 @@ function createLaunchHistory(options = {}) {
       logger.warn('Launch history delete failed.', error);
       setMessage(dom.message, `Delete failed: ${normalizeString(error && error.message, 'unknown error')}`, 'error');
       return false;
+    }
+  }
+
+  async function clearStoredAttemptsAndSnapshots() {
+    if (hasFunction(storage, 'clearAllHistory')) {
+      await storage.clearAllHistory();
+      return;
+    }
+    if (!hasFunction(storage, 'deleteAttempt')) {
+      throw new Error('Cache cleanup unavailable.');
+    }
+    const listed = await storage.listAttempts({ includeInProgress: true });
+    for (const attempt of Array.isArray(listed) ? listed : []) {
+      const id = normalizeString(attempt && attempt.id, '');
+      if (id) {
+        await storage.deleteAttempt(id);
+      }
+    }
+  }
+
+  async function cleanCache() {
+    if (qbankCaptureInProgress) {
+      setQBankOpen(true);
+      setMessage(dom.qbankMessage, 'Wait for QBank capture to finish before cleaning cache.', 'warning');
+      return false;
+    }
+    const warning = [
+      'Clean all local Free120 Helper history and cache from this browser?',
+      '',
+      'This deletes all attempts, in-progress state, stored question snapshots, and QBank capture cache.',
+      'This cannot be undone unless you exported a backup first.',
+      '',
+      'Continue?',
+    ].join('\n');
+    const confirmed = typeof adapterWindow.confirm === 'function' ? adapterWindow.confirm(warning) : false;
+    if (!confirmed) {
+      setMessage(dom.message, 'Clean cache cancelled.', 'info');
+      return false;
+    }
+    setBusy(true);
+    try {
+      await clearStoredAttemptsAndSnapshots();
+      clearHelperWebStorage(adapterWindow);
+      if (qbankCache && typeof qbankCache.reset === 'function') {
+        qbankCache.reset();
+      }
+      attempts = [];
+      qbankStorageSummary = summarizeQBankCaptureStorage([], readLaunchQBankDefinitions());
+      renderAttempts();
+      renderQBankStorageSummary(qbankStorageSummary);
+      dom.importInput.value = '';
+      panelOpen = true;
+      qbankPanelOpen = false;
+      updateOpenState();
+      setMessage(dom.message, 'Cache cleaned: history, in-progress state, question snapshots, and QBank capture deleted.', 'success');
+      setMessage(dom.qbankMessage, 'QBank capture cache deleted.', 'success');
+      return true;
+    } catch (error) {
+      logger.warn('Launch history cache cleanup failed.', error);
+      panelOpen = true;
+      qbankPanelOpen = false;
+      updateOpenState();
+      setMessage(dom.message, `Clean cache failed: ${normalizeString(error && error.message, 'unknown error')}`, 'error');
+      return false;
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1668,6 +1774,7 @@ function createLaunchHistory(options = {}) {
     renderQBankStorageSummary();
     dom.triggerButton.addEventListener('click', togglePanel);
     dom.qbankCaptureButton.addEventListener('click', toggleQBankPanel);
+    dom.cleanCacheButton.addEventListener('click', cleanCache);
     dom.backdrop.addEventListener('click', handleBackdropClick);
     dom.panel.addEventListener('click', handlePanelClick);
     dom.qbankPanel.addEventListener('click', handleQBankPanelClick);
@@ -1683,6 +1790,7 @@ function createLaunchHistory(options = {}) {
     destroyed = true;
     dom.triggerButton.removeEventListener('click', togglePanel);
     dom.qbankCaptureButton.removeEventListener('click', toggleQBankPanel);
+    dom.cleanCacheButton.removeEventListener('click', cleanCache);
     dom.backdrop.removeEventListener('click', handleBackdropClick);
     dom.panel.removeEventListener('click', handlePanelClick);
     dom.qbankPanel.removeEventListener('click', handleQBankPanelClick);
@@ -1706,6 +1814,7 @@ function createLaunchHistory(options = {}) {
     exportFullBackup,
     importHistoryFile,
     captureQBank,
+    cleanCache,
     getState() {
       return Object.freeze({
         open: panelOpen,

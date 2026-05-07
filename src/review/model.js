@@ -47,6 +47,18 @@ function parseBlockNumbers(value) {
   if (!text || /\b(?:all|full|entire|whole|complete)\b/.test(text)) {
     return [];
   }
+  const blockMatches = Array.from(text.matchAll(/\bblock\s*(\d+)\b/g))
+    .map((match) => coercePositiveInteger(match[1], 0))
+    .filter(Boolean);
+  if (blockMatches.length) {
+    return uniqueStrings(blockMatches).map((entry) => coercePositiveInteger(entry, 0)).filter(Boolean);
+  }
+  if (/^\d+$/.test(text)) {
+    return [coercePositiveInteger(text, 0)].filter(Boolean);
+  }
+  if (/\bstep\s*(?:1|2\s*ck|3)\b|\bstpf\s*\d+/i.test(text)) {
+    return [];
+  }
   return uniqueStrings((text.match(/\d+/g) || [])).map((entry) => coercePositiveInteger(entry, 0)).filter(Boolean);
 }
 
@@ -73,7 +85,7 @@ function launchedScopeSuggestsMultipleBlocks(attempt) {
   return blockCount > 1 || allByMode;
 }
 
-function getDominantStoredBlockNumber(attempt) {
+function getStoredBlockCounts(attempt) {
   const counts = new Map();
   const ids = uniqueStrings([
     ...arrayOrEmpty(attempt && attempt.questionIds),
@@ -87,6 +99,11 @@ function getDominantStoredBlockNumber(attempt) {
       counts.set(blockNumber, (counts.get(blockNumber) || 0) + 1);
     }
   });
+  return counts;
+}
+
+function getDominantStoredBlockNumber(attempt) {
+  const counts = getStoredBlockCounts(attempt);
   if (!counts.size) {
     return 0;
   }
@@ -98,13 +115,49 @@ function getDominantStoredBlockNumber(attempt) {
   })[0][0];
 }
 
+function getSingleProgressBlockNumber(attempt) {
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  const progress = plainObjectOrEmpty(source.progress);
+  const byBlock = plainObjectOrEmpty(progress.byBlock);
+  const blocks = Object.entries(byBlock).map(([key, block]) => {
+    const progressBlock = plainObjectOrEmpty(block);
+    return Object.freeze({
+      blockNumber: coercePositiveInteger(progressBlock.blockNumber || progressBlock.block || progressBlock.index, coercePositiveInteger(key, 0)),
+      total: coercePositiveInteger(progressBlock.total || progressBlock.itemCount || progressBlock.questionCount || progressBlock.itemsCount, 0),
+      questionCount: arrayOrEmpty(progressBlock.questionIds).length,
+      answeredCount: arrayOrEmpty(progressBlock.answeredQuestionIds).length,
+    });
+  }).filter((block) => block.blockNumber && (block.total || block.questionCount || block.answeredCount));
+  const blockNumbers = uniqueStrings(blocks.map((block) => block.blockNumber))
+    .map((entry) => coercePositiveInteger(entry, 0))
+    .filter(Boolean);
+  return blockNumbers.length === 1 ? blockNumbers[0] : 0;
+}
+
+function getSingleBlockMetadataNumber(attempt) {
+  const blocks = arrayOrEmpty(attempt && attempt.blockMetadata)
+    .map((block, fallbackIndex) => Object.freeze({
+      blockNumber: coercePositiveInteger(block && (block.blockNumber || block.block || block.index), fallbackIndex + 1),
+      itemCount: coercePositiveInteger(block && (block.itemCount || block.questionCount || block.itemsCount), 0),
+    }))
+    .filter((block) => block.blockNumber && block.itemCount);
+  const blockNumbers = uniqueStrings(blocks.map((block) => block.blockNumber))
+    .map((entry) => coercePositiveInteger(entry, 0))
+    .filter(Boolean);
+  return blockNumbers.length === 1 ? blockNumbers[0] : 0;
+}
+
+function getRecordedSingleReviewBlockNumber(attempt) {
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  return getSingleProgressBlockNumber(attempt)
+    || getSingleBlockMetadataNumber(attempt)
+    || coercePositiveInteger(source.activeBlock || source.currentBlock, 0);
+}
+
 function getSingleReviewBlockNumber(attempt) {
-  const scope = getLaunchedScope(attempt);
-  return coercePositiveInteger([
-    ...parseBlockNumbers(scope.block),
-    ...parseBlockNumbers(scope.selectedBlock),
-    ...parseBlockNumbers(scope.launchedBlock),
-  ][0], coercePositiveInteger(getDominantStoredBlockNumber(attempt), 1));
+  return getRecordedSingleReviewBlockNumber(attempt)
+    || getExplicitReviewBlockNumber(attempt)
+    || coercePositiveInteger(getDominantStoredBlockNumber(attempt), 1);
 }
 
 function normalizeSingleBlockItemIndex(value, fallback = 1) {
@@ -243,6 +296,148 @@ function inferFallbackStatus(selectedAnswerId, correctAnswerId) {
   return answersMatch(selectedAnswerId, correctAnswerId) ? GRADE_STATUS.CORRECT : GRADE_STATUS.INCORRECT;
 }
 
+function normalizeResponseAliases(attempt) {
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  const aliases = plainObjectOrEmpty(source.responseAliases);
+  return Object.freeze({
+    byPosition: Object.freeze(plainObjectOrEmpty(aliases.byPosition || source.responsesByPosition)),
+    byComponent: Object.freeze(plainObjectOrEmpty(aliases.byComponent || source.responsesByComponent)),
+  });
+}
+
+function uniqueAliasValue(values) {
+  const unique = uniqueStrings(values.map((value) => normalizeString(value, '')).filter(Boolean));
+  return unique.length === 1 ? unique[0] : '';
+}
+
+function parseComponentAliasKey(key) {
+  const parts = normalizeString(key, '').split('\u0000');
+  return Object.freeze({
+    blockNumber: coercePositiveInteger(parts[0], 0),
+    medleyId: normalizeString(parts[1], ''),
+    componentId: normalizeString(parts[2], ''),
+  });
+}
+
+function parsePositionAliasKey(key) {
+  const parts = normalizeString(key, '').split('\u0000');
+  return Object.freeze({
+    blockNumber: coercePositiveInteger(parts[0], 0),
+    itemIndex: coercePositiveInteger(parts[1], 0),
+  });
+}
+
+function getReviewResponseAliasForQuestion(attempt, questionId, snapshot = null, result = null, fallbackIndex = 0) {
+  const aliases = normalizeResponseAliases(attempt);
+  const byComponent = plainObjectOrEmpty(aliases.byComponent);
+  const byPosition = plainObjectOrEmpty(aliases.byPosition);
+  if (!Object.keys(byComponent).length && !Object.keys(byPosition).length) {
+    return '';
+  }
+  const metadata = getAttemptItemMetadata(attempt, questionId);
+  const timing = getQuestionTimingRecord(attempt, questionId);
+  const snapshotMetadata = plainObjectOrEmpty(snapshot && snapshot.metadata);
+  const blockCandidates = uniqueStrings([
+    metadata.blockNumber,
+    timing.blockNumber,
+    snapshot && snapshot.blockNumber,
+    snapshotMetadata.blockNumber,
+    result && result.blockNumber,
+    getSingleReviewBlockNumber(attempt),
+  ]).map((entry) => coercePositiveInteger(entry, 0)).filter(Boolean);
+  const itemIndexCandidates = uniqueStrings([
+    metadata.itemIndex,
+    timing.itemIndex,
+    snapshot && snapshot.itemIndex,
+    snapshotMetadata.itemIndex,
+    result && result.itemIndex,
+    fallbackIndex,
+  ]).map((entry) => coercePositiveInteger(entry, 0)).filter(Boolean);
+  const componentCandidates = uniqueStrings([
+    metadata.componentId,
+    snapshotMetadata.componentId,
+    result && result.componentId,
+  ]);
+  const medleyCandidates = uniqueStrings([
+    metadata.medleyId,
+    snapshotMetadata.medleyId,
+    result && result.medleyId,
+  ]);
+
+  for (const blockNumber of blockCandidates) {
+    for (const medleyId of medleyCandidates) {
+      for (const componentId of componentCandidates) {
+        const answerId = normalizeString(byComponent[`${blockNumber}\u0000${medleyId}\u0000${componentId}`], '');
+        if (answerId) {
+          return answerId;
+        }
+      }
+    }
+    for (const itemIndex of itemIndexCandidates) {
+      const answerId = normalizeString(byPosition[`${blockNumber}\u0000${itemIndex}`], '');
+      if (answerId) {
+        return answerId;
+      }
+    }
+  }
+
+  for (const medleyId of medleyCandidates) {
+    for (const componentId of componentCandidates) {
+      const matches = Object.entries(byComponent).filter(([key]) => {
+        const parsed = parseComponentAliasKey(key);
+        return parsed.medleyId === medleyId && parsed.componentId === componentId;
+      }).map(([, answerId]) => answerId);
+      const unique = uniqueAliasValue(matches);
+      if (unique) {
+        return unique;
+      }
+    }
+  }
+
+  for (const itemIndex of itemIndexCandidates) {
+    const matches = Object.entries(byPosition).filter(([key]) => parsePositionAliasKey(key).itemIndex === itemIndex).map(([, answerId]) => answerId);
+    const unique = uniqueAliasValue(matches);
+    if (unique) {
+      return unique;
+    }
+  }
+  return '';
+}
+
+function choiceAnswerIdMatches(choice, answerId) {
+  const normalized = normalizeString(answerId, '').toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  const id = normalizeString(choice && choice.id, '').toLowerCase();
+  const index = normalizeString(choice && choice.index, '').toLowerCase();
+  const candidates = uniqueStrings([normalized, normalized.includes(':') ? normalized.split(':').pop() : '']).map((entry) => entry.toLowerCase());
+  return candidates.includes(id) || candidates.includes(index) || candidates.includes(`option-${index}`);
+}
+
+function getSelectedChoiceId(snapshot) {
+  return normalizeString(arrayOrEmpty(snapshot && snapshot.choices).find((choice) => choice && choice.selected) && arrayOrEmpty(snapshot && snapshot.choices).find((choice) => choice && choice.selected).id, '');
+}
+
+function normalizeSelectedAnswerIdForReview(snapshot, selectedAnswerId) {
+  const normalized = normalizeString(selectedAnswerId, '');
+  const choices = arrayOrEmpty(snapshot && snapshot.choices);
+  const matchingChoice = choices.find((choice) => choiceAnswerIdMatches(choice, normalized));
+  if (matchingChoice) {
+    return normalizeString(matchingChoice.id, normalized);
+  }
+  const selectedChoiceId = getSelectedChoiceId(snapshot);
+  if (selectedChoiceId) {
+    return selectedChoiceId;
+  }
+  const snapshotSelected = normalizeString(snapshot && snapshot.selectedAnswerId, '');
+  const snapshotChoice = choices.find((choice) => choiceAnswerIdMatches(choice, snapshotSelected));
+  if (snapshotChoice) {
+    return normalizeString(snapshotChoice.id, snapshotSelected);
+  }
+  return normalized;
+}
+
 function getQuestionTimeline(attempt, questionId) {
   return arrayOrEmpty(attempt && attempt.answerTimeline)
     .filter((entry) => normalizeString(entry && entry.questionId, '') === questionId)
@@ -324,9 +519,13 @@ function buildReviewQuestion(attempt, questionId, snapshot, result, candidate = 
   const correctAnswers = plainObjectOrEmpty(attempt && attempt.correctAnswers);
   const metadata = getAttemptItemMetadata(attempt, questionId);
   const timing = getQuestionTimingRecord(attempt, questionId);
-  const selectedAnswerId = normalizeString(
+  const rawSelectedAnswerId = normalizeString(
     result && result.selectedAnswerId,
     normalizeString(responses[questionId], normalizeString(snapshot && snapshot.selectedAnswerId, ''))
+  );
+  const selectedAnswerId = normalizeSelectedAnswerIdForReview(
+    snapshot,
+    rawSelectedAnswerId || getReviewResponseAliasForQuestion(attempt, questionId, snapshot, result, candidate && candidate.attemptIndex)
   );
   const correctAnswerId = normalizeString(
     result && result.correctAnswerId,
@@ -334,9 +533,7 @@ function buildReviewQuestion(attempt, questionId, snapshot, result, candidate = 
   );
   const fallbackStatus = inferFallbackStatus(selectedAnswerId, correctAnswerId);
   const resultStatus = normalizeString(result && result.status, '');
-  const status = resultStatus === GRADE_STATUS.UNKNOWN && correctAnswerId
-    ? fallbackStatus
-    : normalizeString(resultStatus, fallbackStatus);
+  const status = correctAnswerId ? fallbackStatus : normalizeString(resultStatus, fallbackStatus);
   const componentId = normalizeString(
     result && result.componentId,
     normalizeString(metadata.componentId, normalizeString(snapshot && snapshot.metadata && snapshot.metadata.componentId, ''))
@@ -551,7 +748,7 @@ function getExplicitReviewBlockNumber(attempt) {
 }
 
 function getReviewProgressBlock(attempt) {
-  const blockNumber = getExplicitReviewBlockNumber(attempt);
+  const blockNumber = getSingleReviewBlockNumber(attempt) || getExplicitReviewBlockNumber(attempt);
   const source = plainObjectOrEmpty(attempt && attempt.source);
   const progress = plainObjectOrEmpty(source.progress);
   const byBlock = plainObjectOrEmpty(progress.byBlock);
@@ -606,12 +803,16 @@ function selectSingleBlockReviewCandidates(attempt, questions) {
   if (sourceBlocks.length <= 1) {
     return list;
   }
+  const recordedBlockNumber = getRecordedSingleReviewBlockNumber(attempt);
   const explicitBlockNumber = getExplicitReviewBlockNumber(attempt);
   const counts = getReviewSourceBlockCounts(list);
   const dominantBlockNumber = getDominantReviewSourceBlockNumber(list);
   const dominantCount = coercePositiveInteger(counts.get(dominantBlockNumber), 0);
+  const recordedCount = coercePositiveInteger(counts.get(recordedBlockNumber), 0);
   const explicitCount = coercePositiveInteger(counts.get(explicitBlockNumber), 0);
-  const targetBlockNumber = explicitBlockNumber && explicitCount >= dominantCount ? explicitBlockNumber : dominantBlockNumber;
+  const targetBlockNumber = recordedBlockNumber && recordedCount
+    ? recordedBlockNumber
+    : (explicitBlockNumber && explicitCount >= dominantCount ? explicitBlockNumber : dominantBlockNumber);
   const filtered = list.filter((question) => !coercePositiveInteger(question && question._sourceBlockNumber, 0)
     || coercePositiveInteger(question && question._sourceBlockNumber, 0) === targetBlockNumber);
   return filtered.length ? filtered : list;
@@ -730,8 +931,9 @@ function buildScoringAttemptForReview(sourceAttempt, questionIds, snapshots = []
   const correctAnswers = { ...filterRecordToQuestionIds(sourceAttempt && sourceAttempt.correctAnswers, ids) };
   allowed.forEach((questionId) => {
     const snapshot = snapshotByQuestionId.get(questionId);
-    if (!normalizeString(responses[questionId], '') && normalizeString(snapshot && snapshot.selectedAnswerId, '')) {
-      responses[questionId] = normalizeString(snapshot.selectedAnswerId, '');
+    const snapshotSelectedAnswerId = normalizeString(snapshot && snapshot.selectedAnswerId, getSelectedChoiceId(snapshot));
+    if (!normalizeString(responses[questionId], '') && snapshotSelectedAnswerId) {
+      responses[questionId] = snapshotSelectedAnswerId;
     }
     if (!normalizeString(correctAnswers[questionId], '') && normalizeString(snapshot && snapshot.correctAnswerId, '')) {
       correctAnswers[questionId] = normalizeString(snapshot.correctAnswerId, '');

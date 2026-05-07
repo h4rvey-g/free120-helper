@@ -59,7 +59,7 @@ if (runtimeContext.pageKind === PAGE_KIND.WEBFRED) {
       webfredAdapter,
       trackingEngine,
       reviewLauncher(attemptId, attempt) {
-        return openReviewTab({ window, storage: attemptStore, attemptId, attempt });
+        return openReviewTab({ window, storage: attemptStore, attemptId, attempt, debugDiagnostics: settingsStore.get().debug });
       },
     });
   } catch (error) {
@@ -84,7 +84,7 @@ if (runtimeContext.pageKind === PAGE_KIND.LAUNCH) {
       storage: attemptStore,
       qbankCache,
       reviewLauncher(attemptId, attempt) {
-        return openReviewTab({ window, storage: attemptStore, attemptId, attempt });
+        return openReviewTab({ window, storage: attemptStore, attemptId, attempt, debugDiagnostics: settingsStore.get().debug });
       },
     });
   } catch (error) {
@@ -113,8 +113,8 @@ const api = Object.freeze({
   webfred: webfredAdapter,
   review: Object.freeze({
     buildReviewHtml,
-    openAttempt(attemptId) {
-      return openReviewTab({ window, storage: attemptStore, attemptId });
+    openAttempt(attemptId, options = {}) {
+      return openReviewTab({ window, storage: attemptStore, attemptId, debugDiagnostics: options.debugDiagnostics !== undefined ? options.debugDiagnostics : settingsStore.get().debug });
     },
   }),
   tracking: trackingEngine,

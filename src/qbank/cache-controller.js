@@ -340,8 +340,15 @@ function createQBankCacheController(options = {}) {
     return lastResult;
   }
 
+  function reset() {
+    status = QBANK_CAPTURE_STATUS.IDLE;
+    lastResult = null;
+    return true;
+  }
+
   return Object.freeze({
     captureAllAvailable,
+    reset,
     getStatus() { return status; },
     getLastResult() { return lastResult; },
     constants: Object.freeze({ status: QBANK_CAPTURE_STATUS, attemptPrefix: QBANK_CACHE_ATTEMPT_PREFIX }),

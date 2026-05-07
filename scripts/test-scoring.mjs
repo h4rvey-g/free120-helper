@@ -18,6 +18,7 @@ import {
   isAttemptReviewReady,
   isEndExamRoute,
   pickLatestEndExamAttempt,
+  shouldPreferStoredEndExamAttempt,
   refreshAttemptQBankKeysForEndExam,
 } from '../src/ui/active-exam-pill.js';
 import { detectRuntimeContext } from '../src/core/runtime-context.js';
@@ -224,6 +225,14 @@ assert.equal(pickLatestEndExamAttempt([
   { id: 'qbank-cache:newer', status: ATTEMPT_STATUS.COMPLETED, questionIds: ['cache-q1'], updatedAt: '2026-05-05T02:00:00.000Z', source: { cacheKind: 'qbank' } },
   { id: 'ready', status: ATTEMPT_STATUS.COMPLETED, questionIds: ['q1'], updatedAt: '2026-05-05T00:00:00.000Z' },
 ]).id, 'ready');
+assert.equal(shouldPreferStoredEndExamAttempt(
+  { id: 'stale-tab-attempt', status: ATTEMPT_STATUS.COMPLETED, questionIds: ['old-q1'], updatedAt: '2026-05-05T00:00:00.000Z' },
+  { id: 'current-block-attempt', status: ATTEMPT_STATUS.COMPLETED, questionIds: ['new-q1'], updatedAt: '2026-05-05T02:00:00.000Z' }
+), true, 'endExam review CTA switches from stale tab attempt to latest stored attempt');
+assert.equal(shouldPreferStoredEndExamAttempt(
+  { id: 'current-block-attempt', status: ATTEMPT_STATUS.COMPLETED, questionIds: ['new-q1'], updatedAt: '2026-05-05T03:00:00.000Z' },
+  { id: 'older-block-attempt', status: ATTEMPT_STATUS.COMPLETED, questionIds: ['old-q1'], updatedAt: '2026-05-05T02:00:00.000Z' }
+), false, 'endExam review CTA keeps fresher current attempt');
 const endExamPatch = buildEndExamCompletionPatch(allBlockAttempt, createSyntheticAdapterState({ blockCount: 3 }), { completedAt: '2026-05-05T03:00:00.000Z' });
 assert.equal(endExamPatch.reviewReady, true);
 assert.equal(endExamPatch.status, ATTEMPT_STATUS.COMPLETED);
