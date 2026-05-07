@@ -212,6 +212,45 @@ assert.equal(allBlockState.itemList[0].itemIndex, 1);
 assert.equal(allBlockState.itemList[39].componentId, 'component-q80');
 assert.equal(allBlockState.currentItem.itemIndex, 1);
 
+const oneBasedGlobalAngularItems = Array.from({ length: 80 }, (_item, index) => ({
+  componentId: `global-onebased-component-${index + 1}`,
+  medleyId: `global-onebased-medley-${Math.floor(index / 40) + 1}`,
+  itemIndex: index + 1,
+}));
+const oneBasedGlobalBlockTwoItem = el('div', { id: 'item-onebased-41', 'data-component-id': 'global-onebased-component-41' }, [
+  el('div', { class: 'NBExposition' }, ['Synthetic one-based block 2 stem']),
+  el('div', { id: 'global-onebased-component-41_div', class: 'NBOptionListComp answerbox' }, [choiceRows]),
+]);
+const oneBasedGlobalBody = el('main', {}, [
+  allBlockNav,
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'global-onebased-medley-2', 'data-medley-id': 'global-onebased-medley-2' }, [oneBasedGlobalBlockTwoItem])])]),
+  el('div', {}, ['Block 2 of 2']),
+]);
+const oneBasedGlobalDocument = createFakeDocument(oneBasedGlobalBody, { title: 'Synthetic Step 1 Free 120' });
+const oneBasedGlobalWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%202&mode=all');
+oneBasedGlobalWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          currentBlock: 2,
+          blockCount: 2,
+          totalQuestions: 80,
+          itemList: oneBasedGlobalAngularItems,
+          currentItem: oneBasedGlobalAngularItems[40],
+        },
+      }),
+    }),
+  }),
+};
+const oneBasedGlobalState = createWebfredSiteAdapter({ window: oneBasedGlobalWindow, document: oneBasedGlobalDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.equal(oneBasedGlobalState.itemList[0].componentId, 'global-onebased-component-41');
+assert.equal(oneBasedGlobalState.itemList[0].itemIndex, 1, 'global one-based Angular indexes rebase to current block without dropping first item');
+assert.equal(oneBasedGlobalState.itemList[39].itemIndex, 40);
+assert.equal(oneBasedGlobalState.currentItem.questionId, oneBasedGlobalState.itemList[0].questionId, 'DOM current item does not replace first item with stale global-index identity');
+assert.equal(oneBasedGlobalState.currentItem.itemIndex, 1);
+
 const answerArrayItems = [
   Object.freeze({ questionId: 'array-b2-q1', componentId: 'array-component-1', medleyId: 'array-medley', blockNumber: 2, itemIndex: 1 }),
   Object.freeze({ questionId: 'array-b2-q2', componentId: 'array-component-2', medleyId: 'array-medley', blockNumber: 2, itemIndex: 2 }),
@@ -665,5 +704,23 @@ assert.deepEqual(aliasRecoveredPatch.responses, {
   'new-b2-q2': 'B',
   'new-b2-q3': 'C',
 }, 'stored response aliases recover non-current answers when adapter only reports current answer');
+
+const staleQuestionIdItemList = [
+  Object.freeze({ questionId: 'webfred:Step-1:Free-120:Block-1:shared-medley:component-1', componentId: 'component-1', medleyId: 'shared-medley', blockNumber: 2, itemIndex: 1 }),
+  Object.freeze({ questionId: 'webfred:Step-1:Free-120:Block-1:shared-medley:component-2', componentId: 'component-2', medleyId: 'shared-medley', blockNumber: 2, itemIndex: 2 }),
+];
+const repairedTrackingItems = getTrackingItemList(createSyntheticAdapterState({
+  examIdentity: Object.freeze({ program: 'Step 1', examName: 'Free 120', section: '' }),
+  currentBlock: 2,
+  itemCount: 2,
+  currentItem: Object.freeze({ ...staleQuestionIdItemList[0], current: true }),
+  itemList: Object.freeze(staleQuestionIdItemList),
+  answers: Object.freeze({}),
+  marks: Object.freeze({}),
+}));
+assert.deepEqual(repairedTrackingItems.map((entry) => entry.questionId), [
+  'webfred:Step-1:Free-120:Block-2:shared-medley:component-1',
+  'webfred:Step-1:Free-120:Block-2:shared-medley:component-2',
+], 'tracking repairs stale question ids after block/index rebasing');
 
 console.log('adapter, key capture, and tracking tests passed');

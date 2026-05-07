@@ -1287,24 +1287,30 @@ function selectAngularItemsForCurrentBlock(rawList, currentBlock, domState = nul
   return rawItems;
 }
 
-function rebaseAngularItemsForCurrentBlock(itemList, currentBlock = 0) {
+function rebaseAngularItemsForCurrentBlock(itemList, currentBlock = 0, expectedItemCount = 0) {
   const items = Array.isArray(itemList) ? itemList : [];
   if (!items.length) {
     return [];
   }
   const blockNumber = coercePositiveInteger(currentBlock, 0);
+  const expectedCount = coercePositiveInteger(expectedItemCount, items.length);
   const indexes = items.map((item) => coercePositiveInteger(item && item.itemIndex, 0)).filter(Boolean);
   const maxIndex = indexes.length ? Math.max(...indexes) : 0;
   const minIndex = indexes.length ? Math.min(...indexes) : 0;
-  const shouldRebaseIndex = minIndex > 1 && maxIndex > items.length;
+  const shouldRebaseIndex = Boolean(blockNumber > 1 && expectedCount > 0 && minIndex > expectedCount && maxIndex > expectedCount);
+  const blockOffset = shouldRebaseIndex ? (blockNumber - 1) * expectedCount : 0;
   if (!blockNumber && !shouldRebaseIndex) {
     return items;
   }
-  return items.map((item, index) => Object.freeze({
-    ...item,
-    blockNumber: blockNumber || item.blockNumber,
-    itemIndex: shouldRebaseIndex ? index + 1 : item.itemIndex,
-  }));
+  return items.map((item) => {
+    const rawItemIndex = coercePositiveInteger(item && item.itemIndex, 0);
+    const rebasedItemIndex = shouldRebaseIndex ? coercePositiveInteger(rawItemIndex - blockOffset, rawItemIndex) : rawItemIndex;
+    return Object.freeze({
+      ...item,
+      blockNumber: blockNumber || item.blockNumber,
+      itemIndex: rebasedItemIndex || item.itemIndex,
+    });
+  });
 }
 
 function addAnswerMapping(answers, questionId, answerId) {
@@ -1725,12 +1731,13 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
   const rawItemList = findFirstSemanticValue(roots, ['itemList', 'items', 'questions', 'questionList', 'testItems'], { maxDepth: 3 });
   const rawCurrentItem = findFirstSemanticValue(roots, ['currentItem', 'activeItem', 'selectedItem', 'item', 'currentQuestion'], { maxDepth: 3 });
   const fallbackItem = domState && domState.currentItem ? domState.currentItem : null;
+  const expectedCurrentBlockItemCount = coercePositiveInteger(domState && domState.itemCount, coercePositiveInteger(itemCount, 0));
   const scopedRawItemList = selectAngularItemsForCurrentBlock(rawItemList, currentBlock, domState);
   const itemList = rebaseAngularItemsForCurrentBlock(normalizeItemListFromAngular(scopedRawItemList, {
     examIdentity,
     blockNumber: currentBlock || (fallbackItem && fallbackItem.blockNumber) || 1,
     fallbackItem,
-  }), currentBlock || (fallbackItem && fallbackItem.blockNumber) || 0);
+  }), currentBlock || (fallbackItem && fallbackItem.blockNumber) || 0, expectedCurrentBlockItemCount);
   let currentItem = isReadableObject(rawCurrentItem)
     ? normalizeAngularItem(rawCurrentItem, {
         examIdentity,

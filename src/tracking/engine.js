@@ -101,10 +101,29 @@ function buildTrackingPageContext(adapterState, runtimeContext) {
   });
 }
 
+function itemIdentityMatchesQuestionId(item, adapterState, questionId) {
+  const normalizedQuestionId = normalizeString(questionId, '');
+  if (!item || !normalizedQuestionId || !normalizedQuestionId.startsWith('webfred:')) {
+    return true;
+  }
+  const examIdentity = adapterState && adapterState.examIdentity ? adapterState.examIdentity : {};
+  const identity = buildQuestionIdentity({
+    examProgram: examIdentity.program,
+    examName: examIdentity.examName,
+    examSection: examIdentity.section,
+    medleyId: item.medleyId,
+    componentId: item.componentId,
+    itemId: item.itemId || item.id,
+    blockNumber: item.blockNumber || (adapterState && adapterState.currentBlock) || 1,
+    itemIndex: item.itemIndex || 1,
+  });
+  return !identity.questionId || identity.questionId === normalizedQuestionId;
+}
+
 function getTrackingQuestionId(rawItem, adapterState, options = {}) {
   const item = rawItem || {};
   const existingId = normalizeString(item.questionId, '');
-  if (existingId) {
+  if (existingId && itemIdentityMatchesQuestionId(item, adapterState, existingId)) {
     return existingId;
   }
 

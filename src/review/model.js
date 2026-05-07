@@ -292,6 +292,11 @@ function normalizeChoices(snapshot) {
   }));
 }
 
+function getSnapshotOriginalItemIndex(snapshot) {
+  const metadata = plainObjectOrEmpty(snapshot && snapshot.metadata);
+  return coercePositiveInteger(metadata.qbankCacheOriginalItemIndex || metadata.qbankFallbackOriginalItemIndex, 0);
+}
+
 function normalizeSnapshotForReview(snapshot) {
   if (!snapshot) {
     return Object.freeze({
@@ -356,13 +361,17 @@ function buildReviewQuestion(attempt, questionId, snapshot, result, candidate = 
   const resultBlockNumber = !singleBlockReview && resultPositionTrusted ? coercePositiveInteger(result && result.blockNumber, 0) : 0;
   const candidateBlockNumber = coercePositiveInteger(candidatePosition.blockNumber, 0);
   const candidateItemIndex = coercePositiveInteger(candidatePosition.itemIndex, 0);
+  const originalSnapshotItemIndex = getSnapshotOriginalItemIndex(snapshot);
   const rawItemIndex = coercePositiveInteger(
-    metadata.itemIndex,
+    originalSnapshotItemIndex,
     coercePositiveInteger(
-      timing.itemIndex,
+      metadata.itemIndex,
       coercePositiveInteger(
-        snapshot && snapshot.itemIndex,
-        coercePositiveInteger(candidateItemIndex, coercePositiveInteger(result && result.itemIndex, 1))
+        timing.itemIndex,
+        coercePositiveInteger(
+          snapshot && snapshot.itemIndex,
+          coercePositiveInteger(candidateItemIndex, coercePositiveInteger(result && result.itemIndex, 1))
+        )
       )
     )
   );
@@ -541,13 +550,49 @@ function getExplicitReviewBlockNumber(attempt) {
   ][0], 0);
 }
 
-function getReviewProgressBlockQuestionIds(attempt) {
+function getReviewProgressBlock(attempt) {
   const blockNumber = getExplicitReviewBlockNumber(attempt);
   const source = plainObjectOrEmpty(attempt && attempt.source);
   const progress = plainObjectOrEmpty(source.progress);
   const byBlock = plainObjectOrEmpty(progress.byBlock);
-  const block = plainObjectOrEmpty(byBlock[String(blockNumber)] || byBlock[blockNumber]);
-  return blockNumber ? uniqueStrings(arrayOrEmpty(block.questionIds)) : [];
+  return blockNumber ? plainObjectOrEmpty(byBlock[String(blockNumber)] || byBlock[blockNumber]) : {};
+}
+
+function getReviewProgressBlockQuestionIds(attempt) {
+  return uniqueStrings(arrayOrEmpty(getReviewProgressBlock(attempt).questionIds));
+}
+
+function getReviewProgressBlockTotal(attempt) {
+  const block = getReviewProgressBlock(attempt);
+  return coercePositiveInteger(block.total || block.itemCount || block.questionCount || block.itemsCount, 0);
+}
+
+function getReviewBlockMetadataItemCount(attempt, blockNumber) {
+  const blocks = arrayOrEmpty(attempt && attempt.blockMetadata);
+  const normalizedBlockNumber = coercePositiveInteger(blockNumber, 0);
+  const block = blocks.find((entry) => coercePositiveInteger(entry && (entry.blockNumber || entry.block || entry.index), 0) === normalizedBlockNumber)
+    || (blocks.length === 1 ? blocks[0] : null);
+  return coercePositiveInteger(block && (block.itemCount || block.questionCount || block.itemsCount), 0);
+}
+
+function getExpectedSingleReviewItemCount(attempt) {
+  if (launchedScopeSuggestsMultipleBlocks(attempt)) {
+    return 0;
+  }
+  const blockNumber = getSingleReviewBlockNumber(attempt);
+  const progressTotal = getReviewProgressBlockTotal(attempt);
+  const metadataTotal = getReviewBlockMetadataItemCount(attempt, blockNumber);
+  const attemptTotal = coercePositiveInteger(attempt && attempt.questionCount, 0);
+  const expected = Math.max(progressTotal, metadataTotal, attemptTotal);
+  return expected ? Math.min(expected, MAX_REVIEW_ITEMS_PER_BLOCK) : 0;
+}
+
+function shouldUseReviewProgressScope(attempt, progressQuestionIds) {
+  if (!progressQuestionIds.length) {
+    return false;
+  }
+  const expectedCount = getExpectedSingleReviewItemCount(attempt) || getReviewProgressBlockTotal(attempt);
+  return !expectedCount || progressQuestionIds.length >= Math.min(expectedCount, MAX_REVIEW_ITEMS_PER_BLOCK);
 }
 
 function selectSingleBlockReviewCandidates(attempt, questions) {
@@ -597,7 +642,7 @@ function selectValidReviewQuestionIds(sourceAttempt, snapshots, scoreSummary) {
   const reviewCandidates = anchoredQuestions.length ? anchoredQuestions : rawQuestions;
   const progressQuestionIds = getReviewProgressBlockQuestionIds(sourceAttempt);
   const progressAllowed = new Set(progressQuestionIds);
-  const progressScopedCandidates = progressQuestionIds.length
+  const progressScopedCandidates = shouldUseReviewProgressScope(sourceAttempt, progressQuestionIds)
     ? reviewCandidates.filter((question) => progressAllowed.has(normalizeString(question && question.questionId, '')))
     : [];
   const scopedCandidates = progressScopedCandidates.length ? progressScopedCandidates : reviewCandidates;
@@ -617,8 +662,68 @@ function filterSourceToQuestionIds(source, questionIds) {
   });
 }
 
+function sanitizeMissingReviewQuestionIdPart(value) {
+  return normalizeString(value, '')
+    .replace(/[^a-zA-Z0-9_.:-]/g, '-')
+    .slice(0, 120) || 'attempt';
+}
+
+function createMissingReviewQuestionId(attempt, blockNumber, itemIndex, seenIds) {
+  const attemptPart = sanitizeMissingReviewQuestionIdPart(attempt && attempt.id);
+  const baseId = `webfred:review-missing:${attemptPart}:block-${blockNumber}:item-${itemIndex}`;
+  let candidateId = baseId;
+  let suffix = 2;
+  while (seenIds.has(candidateId)) {
+    candidateId = `${baseId}:${suffix}`;
+    suffix += 1;
+  }
+  return candidateId;
+}
+
+function getReviewPaddingItemIndex(sourceAttempt, snapshotByQuestionId, questionId, fallbackIndex) {
+  const metadata = getAttemptItemMetadata(sourceAttempt, questionId);
+  const timing = getQuestionTimingRecord(sourceAttempt, questionId);
+  const snapshot = snapshotByQuestionId.get(questionId);
+  return normalizeSingleBlockItemIndex(
+    getSnapshotOriginalItemIndex(snapshot),
+    coercePositiveInteger(metadata.itemIndex, coercePositiveInteger(timing.itemIndex, coercePositiveInteger(snapshot && snapshot.itemIndex, fallbackIndex)))
+  );
+}
+
+function padSingleBlockReviewQuestionIds(sourceAttempt, questionIds, snapshots = []) {
+  if (launchedScopeSuggestsMultipleBlocks(sourceAttempt)) {
+    return arrayOrEmpty(questionIds).slice();
+  }
+  const expectedCount = getExpectedSingleReviewItemCount(sourceAttempt);
+  const ids = uniqueStrings(questionIds);
+  if (!expectedCount || ids.length >= expectedCount) {
+    return ids;
+  }
+  const reviewBlockNumber = getSingleReviewBlockNumber(sourceAttempt);
+  const snapshotByQuestionId = buildSnapshotByQuestionId(snapshots);
+  const seenIds = new Set(ids);
+  const usedItemIndexes = new Set();
+  ids.forEach((questionId, index) => {
+    const itemIndex = getReviewPaddingItemIndex(sourceAttempt, snapshotByQuestionId, questionId, index + 1);
+    if (itemIndex >= 1 && itemIndex <= expectedCount) {
+      usedItemIndexes.add(itemIndex);
+    }
+  });
+  for (let itemIndex = 1; itemIndex <= expectedCount && ids.length < expectedCount; itemIndex += 1) {
+    if (usedItemIndexes.has(itemIndex)) {
+      continue;
+    }
+    const missingQuestionId = createMissingReviewQuestionId(sourceAttempt, reviewBlockNumber, itemIndex, seenIds);
+    ids.push(missingQuestionId);
+    seenIds.add(missingQuestionId);
+    usedItemIndexes.add(itemIndex);
+  }
+  return ids;
+}
+
 function buildScoringAttemptForReview(sourceAttempt, questionIds, snapshots = []) {
-  const ids = arrayOrEmpty(questionIds);
+  const singleBlockReview = !launchedScopeSuggestsMultipleBlocks(sourceAttempt);
+  const ids = singleBlockReview ? padSingleBlockReviewQuestionIds(sourceAttempt, questionIds, snapshots) : arrayOrEmpty(questionIds);
   const allowed = new Set(ids);
   const snapshotByQuestionId = buildSnapshotByQuestionId(snapshots);
   const responses = { ...filterRecordToQuestionIds(sourceAttempt && sourceAttempt.responses, ids) };
@@ -632,15 +737,19 @@ function buildScoringAttemptForReview(sourceAttempt, questionIds, snapshots = []
       correctAnswers[questionId] = normalizeString(snapshot.correctAnswerId, '');
     }
   });
-  const singleBlockReview = !launchedScopeSuggestsMultipleBlocks(sourceAttempt);
   const reviewBlockNumber = getSingleReviewBlockNumber(sourceAttempt);
   const source = filterSourceToQuestionIds(sourceAttempt && sourceAttempt.source, ids);
+  const sourceMetadataByQuestionId = plainObjectOrEmpty(source.itemMetadataByQuestionId);
   const metadataByQuestionId = singleBlockReview
-    ? Object.freeze(Object.fromEntries(Object.entries(plainObjectOrEmpty(source.itemMetadataByQuestionId)).map(([questionId, metadata], index) => [questionId, Object.freeze({
-        ...plainObjectOrEmpty(metadata),
-        blockNumber: reviewBlockNumber,
-        itemIndex: normalizeSingleBlockItemIndex(metadata && metadata.itemIndex, index + 1),
-      })])))
+    ? Object.freeze(Object.fromEntries(ids.map((questionId, index) => {
+        const metadata = plainObjectOrEmpty(sourceMetadataByQuestionId[questionId]);
+        return [questionId, Object.freeze({
+          ...metadata,
+          questionId,
+          blockNumber: reviewBlockNumber,
+          itemIndex: getReviewPaddingItemIndex(sourceAttempt, snapshotByQuestionId, questionId, index + 1),
+        })];
+      })))
     : source.itemMetadataByQuestionId;
   return Object.freeze({
     ...sourceAttempt,
@@ -661,9 +770,10 @@ function buildReviewModel(attempt, snapshots = []) {
   const initialScoreSummary = getReviewScoreSummary(sourceAttempt);
   const questionIds = selectValidReviewQuestionIds(sourceAttempt, snapshots, initialScoreSummary);
   const scoringAttempt = buildScoringAttemptForReview(sourceAttempt, questionIds, snapshots);
+  const scoringQuestionIds = arrayOrEmpty(scoringAttempt.questionIds);
   const scoreSummary = buildAttemptScoreSummary(scoringAttempt, { reason: 'review-render-filtered' });
-  const candidateByQuestionId = buildQuestionCandidateMap(sourceAttempt, snapshots, scoreSummary);
-  const questions = buildReviewQuestions(sourceAttempt, snapshots, scoreSummary, questionIds, candidateByQuestionId)
+  const candidateByQuestionId = buildQuestionCandidateMap(scoringAttempt, snapshots, scoreSummary);
+  const questions = buildReviewQuestions(scoringAttempt, snapshots, scoreSummary, scoringQuestionIds, candidateByQuestionId)
     .map(stripReviewQuestionInternals);
 
   return Object.freeze({

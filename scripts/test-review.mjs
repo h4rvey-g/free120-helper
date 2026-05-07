@@ -285,4 +285,47 @@ assert.deepEqual(scopedReviewModel.questions.map((question) => question.question
 assert.deepEqual(scopedReviewModel.scoreSummary.perBlock.map((block) => block.blockNumber), [2]);
 assert.equal(scopedReviewModel.scoreSummary.answered, 0);
 
+const incompleteProgressIds = Array.from({ length: 40 }, (_item, index) => `incomplete-progress-q${index + 1}`);
+const incompleteProgressModel = buildReviewModel(Object.freeze({
+  id: 'attempt-incomplete-progress-review',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+  questionIds: Object.freeze(incompleteProgressIds),
+  questionCount: 40,
+  correctAnswers: Object.freeze(Object.fromEntries(incompleteProgressIds.map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    progress: Object.freeze({
+      byBlock: Object.freeze({
+        1: Object.freeze({ blockNumber: 1, answered: 0, total: 40, questionIds: Object.freeze(incompleteProgressIds.slice(0, 38)), answeredQuestionIds: Object.freeze([]) }),
+      }),
+    }),
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries(incompleteProgressIds.map((questionId, index) => [questionId, Object.freeze({ questionId, blockNumber: 1, itemIndex: index + 1 })]))),
+  }),
+}), []);
+assert.equal(incompleteProgressModel.questions.length, 40, 'review ignores incomplete progress question-id scope');
+assert.deepEqual(incompleteProgressModel.questions.map((question) => question.itemIndex), Array.from({ length: 40 }, (_item, index) => index + 1));
+
+const legacyShortIds = Array.from({ length: 38 }, (_item, index) => `legacy-short-q${index + 1}`);
+const legacyShortModel = buildReviewModel(Object.freeze({
+  id: 'attempt-legacy-short-question-list',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+  questionIds: Object.freeze(legacyShortIds),
+  questionCount: 40,
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 1, itemCount: 40, label: 'Block 1' })]),
+  correctAnswers: Object.freeze(Object.fromEntries(legacyShortIds.map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    progress: Object.freeze({
+      byBlock: Object.freeze({
+        1: Object.freeze({ blockNumber: 1, answered: 0, total: 40, questionIds: Object.freeze(legacyShortIds), answeredQuestionIds: Object.freeze([]) }),
+      }),
+    }),
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries(legacyShortIds.map((questionId, index) => [questionId, Object.freeze({ questionId, blockNumber: 1, itemIndex: index + 1 })]))),
+  }),
+}), []);
+assert.equal(legacyShortModel.questions.length, 40, 'review pads legacy single-block attempts to recorded item count');
+assert.equal(legacyShortModel.questions[38].itemIndex, 39);
+assert.match(legacyShortModel.questions[38].questionId, /^webfred:review-missing:/);
+assert.equal(legacyShortModel.scoreSummary.total, 40);
+
 console.log('review and history tests passed');

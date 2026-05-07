@@ -116,4 +116,45 @@ const metadataOnlyScopeSnapshots = await loadQBankSnapshotsForAttempt(qbankStora
 assert.equal(metadataOnlyScopeSnapshots.length, 1, 'review qbank fallback uses launched scope block when stored metadata drifted');
 assert.equal(metadataOnlyScopeSnapshots[0].questionId, 'legacy-live-q1');
 
+const shiftedQBankAttempt = Object.freeze({
+  id: 'qbank-cache:USMLE:STPF1:ShiftedBlock1',
+  correctAnswers: Object.freeze({
+    'webfred:USMLE:STPF1:Block-1:MED1:COMP1': 'A',
+    'webfred:USMLE:STPF1:Block-1:MED1:COMP2': 'B',
+    'webfred:USMLE:STPF1:Block-1:MED1:COMP3': 'C',
+  }),
+  source: Object.freeze({ cacheKind: 'qbank' }),
+});
+const shiftedQBankSnapshots = [1, 2, 3].map((itemIndex) => Object.freeze({
+  id: `qbank-shifted-snapshot-${itemIndex}`,
+  attemptId: shiftedQBankAttempt.id,
+  questionId: `webfred:USMLE:STPF1:Block-1:MED1:COMP${itemIndex}`,
+  blockNumber: 1,
+  itemIndex,
+  correctAnswerId: ['A', 'B', 'C'][itemIndex - 1],
+  renderedHtml: `<div id="item${itemIndex}"><div class="NBExposition">Q${itemIndex}</div><ol class="options"></ol></div>`,
+  metadata: Object.freeze({ componentId: `COMP${itemIndex}`, medleyId: 'MED1', blockNumber: 1, itemIndex }),
+}));
+const shiftedQBankStorage = Object.freeze({
+  async listAttempts() { return [shiftedQBankAttempt]; },
+  async listQuestionSnapshots() { return shiftedQBankSnapshots; },
+});
+const shiftedLiveSnapshots = await loadQBankSnapshotsForAttempt(shiftedQBankStorage, {
+  id: 'attempt-shifted-live-review',
+  launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+  questionIds: Object.freeze([
+    'webfred:USMLE:STPF1:Block-1:MED1:COMP2',
+    'webfred:USMLE:STPF1:Block-1:MED1:COMP3',
+  ]),
+  questionCount: 3,
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 1, itemCount: 3 })]),
+  source: Object.freeze({ itemMetadataByQuestionId: Object.freeze({
+    'webfred:USMLE:STPF1:Block-1:MED1:COMP2': Object.freeze({ componentId: 'COMP2', medleyId: 'MED1', blockNumber: 1, itemIndex: 1 }),
+    'webfred:USMLE:STPF1:Block-1:MED1:COMP3': Object.freeze({ componentId: 'COMP3', medleyId: 'MED1', blockNumber: 1, itemIndex: 2 }),
+  }) }),
+}, []);
+assert.deepEqual(shiftedLiveSnapshots.slice().sort((left, right) => left.itemIndex - right.itemIndex).map((snapshot) => snapshot.correctAnswerId), ['A', 'B', 'C'], 'qbank review fallback backfills skipped first item and preserves original positions');
+assert.match(shiftedLiveSnapshots.find((snapshot) => snapshot.itemIndex === 1).questionId, /^webfred:review-missing:/);
+assert.equal(shiftedLiveSnapshots.find((snapshot) => snapshot.correctAnswerId === 'B').itemIndex, 2);
+
 console.log('qbank cache tests passed');
