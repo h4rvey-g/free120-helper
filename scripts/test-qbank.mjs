@@ -74,11 +74,17 @@ const qbankMediaWindow = Object.freeze({
       return {
         ok: true,
         status: 200,
-        json: async () => ({ content: [{ hotspotConfig: [{ contentMedia: { src: 'api/Resource?name=synthetic.webm' }, diagramMedia: { src: 'api/Resource?name=synthetic.jpg' } }] }] }),
+        json: async () => ({ content: [{ hotspotConfig: [
+          { label: 'Aortic', shape: 'circle', coords: '10,10,5', contentMedia: { src: 'api/Resource?name=synthetic-aortic.webm' }, diagramMedia: { src: 'api/Resource?name=synthetic.jpg' } },
+          { label: 'Mitral', shape: 'circle', coords: '20,20,5', contentMedia: { src: 'api/Resource?name=synthetic.webm' }, diagramMedia: { src: 'api/Resource?name=synthetic.jpg' } },
+        ] }] }),
       };
     }
     if (textUrl.includes('synthetic.jpg')) {
       return { ok: true, status: 200, headers: new Map([['content-type', 'image/jpeg'], ['content-length', '3']]), arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer };
+    }
+    if (textUrl.includes('synthetic-aortic.webm')) {
+      return { ok: true, status: 200, headers: new Map([['content-type', 'video/webm'], ['content-length', '3']]), arrayBuffer: async () => Uint8Array.from([7, 8, 9]).buffer };
     }
     if (textUrl.includes('synthetic.webm')) {
       return { ok: true, status: 200, headers: new Map([['content-type', 'video/webm'], ['content-length', '3']]), arrayBuffer: async () => Uint8Array.from([4, 5, 6]).buffer };
@@ -99,8 +105,14 @@ const qbankMediaCapture = await buildQBankSnapshotsFromSessionData(qbankMediaWin
 }, 'synthetic-session');
 assert.equal(qbankMediaCapture.snapshots.length, 1);
 assert.ok(qbankMediaCapture.snapshots[0].resourceUrls.includes('api/Resource?name=synthetic.webm'), 'qbank media metadata resources captured');
+assert.ok(qbankMediaCapture.snapshots[0].resourceUrls.includes('api/Resource?name=synthetic-aortic.webm'), 'qbank hotspot media resources captured');
 assert.ok(qbankMediaCapture.snapshots[0].resourceDataByUrl['https://orientation.nbme.org/webfred/api/Resource?name=synthetic.webm'], 'qbank media video cached as data URL');
+assert.ok(qbankMediaCapture.snapshots[0].resourceDataByUrl['https://orientation.nbme.org/webfred/api/Resource?name=synthetic-aortic.webm'], 'qbank hotspot media video cached as data URL');
 assert.ok(qbankMediaCapture.snapshots[0].resourceDataByUrl['https://orientation.nbme.org/webfred/api/Resource?name=synthetic.jpg'], 'qbank media image cached as data URL');
+assert.equal(qbankMediaCapture.snapshots[0].metadata.mediaInteractions.length >= 2, true, 'qbank media hotspot interactions captured');
+const aorticInteraction = qbankMediaCapture.snapshots[0].metadata.mediaInteractions.find((entry) => entry.label === 'Aortic');
+assert.ok(aorticInteraction, 'qbank media hotspot label captured');
+assert.equal(aorticInteraction.coords, '10,10,5');
 assert.ok(qbankMediaFetchCalls.some((call) => call.url.includes('synthetic.webm') && call.cache === 'no-store'), 'qbank resource capture bypasses stale browser cache');
 assert.ok(qbankMediaFetchCalls.some((call) => call.url.includes('synthetic.jpg') && call.cache === 'no-store'), 'qbank image capture bypasses stale browser cache');
 assert.ok(qbankMediaDocument.cookie.startsWith('nbme.webfred.exam.session=previous-session'), 'qbank capture restores prior active WebFRED session cookie after resource fetch');

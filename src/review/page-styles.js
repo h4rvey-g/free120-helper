@@ -71,7 +71,25 @@ const REVIEW_PAGE_CSS = `
   #medley .f120-review-native-media-fallback { display: grid; gap: 10px; max-width: 720px; margin: 10px 0; }
   #medley .f120-review-native-media-entry { display: grid; gap: 4px; padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; background: #f8fafc; }
   #medley .f120-review-native-media-label { font-size: 12px; font-weight: 800; color: #334155; }
-  #medley .f120-review-native-media-entry video, #medley .f120-review-native-media-entry audio { width: 100%; min-height: 36px; }
+  #medley .f120-review-native-media-entry video, #medley .f120-review-native-media-entry audio,
+  #medley .f120-review-native-media-fallback--interactive video,
+  #medley .f120-review-native-media-fallback--interactive audio { width: 100%; min-height: 36px; }
+  #medley .f120-review-hotspot-diagram { position: relative; display: inline-block; max-width: 100%; }
+  #medley .f120-review-hotspot-diagram img { display: block; }
+  #medley .f120-review-hotspot-marker { position: absolute; transform: translate(-50%, -50%); border: 2px solid #1d4ed8; border-radius: 999px; background: rgba(219,234,254,0.78); color: #1d4ed8; font: inherit; font-size: 11px; font-weight: 900; line-height: 1; cursor: pointer; box-shadow: 0 1px 4px rgba(15,23,42,0.25); }
+  #medley .f120-review-hotspot-marker:hover, #medley .f120-review-hotspot-marker.is-selected { background: rgba(37,99,235,0.92); color: #fff; border-color: #1e40af; }
+  #medley .f120-review-media-notice { border: 1px solid #f59e0b; background: #fffbeb; color: #92400e; border-radius: 8px; padding: 8px 10px; font-size: 12px; font-weight: 700; }
+  #medley .f120-review-audio-player { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; }
+  #medley .f120-review-audio-player button { border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #111827; font: inherit; font-size: 12px; font-weight: 800; padding: 6px 10px; cursor: pointer; }
+  #medley .f120-review-audio-player button:hover:not(:disabled) { background: #eff6ff; border-color: #60a5fa; }
+  #medley .f120-review-audio-player button:disabled { opacity: 0.55; cursor: not-allowed; }
+  #medley .f120-review-audio-player.is-playing .f120-review-audio-status { color: #047857; }
+  #medley .f120-review-audio-status { font-size: 12px; font-weight: 800; color: #475569; }
+  #medley .f120-review-media-download { display: inline-block; color: #1d4ed8; text-decoration: underline; font-size: 12px; font-weight: 800; }
+  #medley .f120-review-hotspot-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+  #medley .f120-review-hotspot-button { border: 1px solid #cbd5e1; border-radius: 999px; padding: 5px 8px; background: #fff; color: #111827; font: inherit; font-size: 12px; font-weight: 800; cursor: pointer; }
+  #medley .f120-review-hotspot-button:hover { background: #eff6ff; border-color: #60a5fa; }
+  #medley .f120-review-hotspot-button.is-selected { background: #dbeafe; border-color: #2563eb; color: #1d4ed8; }
   #medley .f120-review-media-inline-duplicate { display: none; }
   .f120-review-side { align-self: start; position: sticky; top: 72px; max-height: calc(100vh - 90px); overflow: auto; }
   .f120-review-detail-panel h2 { margin: 0 0 8px; font-size: 14px; }

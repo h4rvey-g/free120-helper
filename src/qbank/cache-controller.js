@@ -3,7 +3,7 @@ import { nowIso } from '../core/logger.js';
 import { buildAttemptScoreSummary } from '../scoring/grader.js';
 import { createQuestionSnapshotId, normalizeString, uniqueNormalizedStrings } from '../core/data.js';
 import { buildQuestionIdentity, extractChoicesFromDom, extractResourceUrls } from '../webfred/adapter.js';
-import { extractMediaResourceUrlsForHtml, extractResourceUrlsFromHtml, fetchResourceDataByUrl } from '../media/resource-cache.js';
+import { extractMediaInteractionsForHtml, extractMediaResourceUrlsForHtml, extractResourceUrlsFromHtml, fetchResourceDataByUrl } from '../media/resource-cache.js';
 
 const QBANK_CACHE_ATTEMPT_PREFIX = 'qbank-cache';
 const QBANK_CAPTURE_STATUS = Object.freeze({
@@ -224,10 +224,15 @@ async function buildQBankSnapshotsFromSessionData(adapterWindow, adapterDocument
       const questionId = identity.questionId || `${definition.examName}:${medleyId}:${componentId}`;
       const renderedHtml = normalizeString(itemRoot && itemRoot.outerHTML, html);
       const promptElement = itemRoot && itemRoot.querySelector ? itemRoot.querySelector('.NBExposition, [class*="Exposition"]') : null;
+      const mediaMetadataOptions = { cache: 'no-store', sessionId };
+      const mediaMetadataResourceUrls = await extractMediaResourceUrlsForHtml(adapterWindow, renderedHtml, mediaMetadataOptions);
+      const mediaInteractions = await extractMediaInteractionsForHtml(adapterWindow, renderedHtml, mediaMetadataOptions);
+      const mediaInteractionResourceUrls = mediaInteractions.flatMap((interaction) => [interaction && interaction.src, interaction && interaction.image]);
       const resourceUrls = uniqueNormalizedStrings([
         ...extractResourceUrls(itemRoot),
         ...extractResourceUrlsFromHtml(renderedHtml),
-        ...await extractMediaResourceUrlsForHtml(adapterWindow, renderedHtml),
+        ...mediaMetadataResourceUrls,
+        ...mediaInteractionResourceUrls,
       ]);
       const resourceDataByUrl = await fetchResourceDataByUrl(adapterWindow, resourceUrls, { baseUrl: `${SCRIPT.ORIGIN}/webfred/`, cache: 'no-store', sessionId });
       if (correctAnswerId) {
@@ -246,7 +251,7 @@ async function buildQBankSnapshotsFromSessionData(adapterWindow, adapterDocument
         questionId,
         blockNumber: definition.blockNumber,
         itemIndex: answerableIndex,
-        metadata: Object.freeze({ ...itemMetadataByQuestionId[questionId], cacheKind: 'qbank', sessionId }),
+        metadata: Object.freeze({ ...itemMetadataByQuestionId[questionId], cacheKind: 'qbank', sessionId, mediaInteractions }),
         promptHtml: normalizeString(promptElement && promptElement.innerHTML, ''),
         renderedHtml,
         choices,

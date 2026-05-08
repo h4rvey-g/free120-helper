@@ -79,8 +79,9 @@ assert.match(html, /div\[id\$="_div"\]\.NBOptionListComp\.answerbox/);
 assert.match(html, /f120-review-block-filter/);
 assert.match(html, /Score summary/);
 assert.match(html, /<base href="https:\/\/orientation\.nbme\.org\/webfred\/">/);
+assert.match(html, /media-src 'self' data:/);
 assert.match(html, /function normalizeSnapshotMedia/);
-assert.match(html, /preload', 'metadata'/);
+assert.match(html, /preload', 'none'/);
 assert.match(html, /function applyCachedResourceData/);
 assert.doesNotMatch(html, /fetch\s*\(/);
 assert.doesNotMatch(html, /XMLHttpRequest/);
@@ -131,6 +132,12 @@ const cachedMediaHtml = buildReviewHtml(Object.freeze({
 assert.match(cachedMediaHtml, /data:image\/png;base64,AAAA/, 'review embeds cached image data');
 assert.match(cachedMediaHtml, /data:video\/webm;base64,BBBB/, 'review embeds cached video data');
 assert.match(cachedMediaHtml, /f120-review-native-media-fallback/, 'review runtime can render native media fallback');
+assert.match(cachedMediaHtml, /function createInteractiveMediaFallback/, 'review runtime can render interactive media hotspot fallback');
+assert.match(cachedMediaHtml, /function setMediaSource/, 'review runtime switches cached media sources');
+assert.match(cachedMediaHtml, /function playDataUrlAudio/, 'review runtime plays cached media through Web Audio without CSP media loads');
+assert.match(cachedMediaHtml, /f120-review-audio-player/, 'review runtime includes CSP-safe audio player');
+assert.match(cachedMediaHtml, /f120-review-hotspot-button/, 'review runtime includes media hotspot controls');
+assert.match(cachedMediaHtml, /f120-review-hotspot-marker/, 'review runtime includes diagram hotspot markers');
 
 const historyAttempt = Object.freeze({
   ...attempt,

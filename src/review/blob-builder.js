@@ -772,6 +772,12 @@ function buildReviewRuntimeScript(model) {
   }
   function sanitizeSnapshotFragment(root) {
     qsa('script, iframe, object, embed, link[rel="import"]', root).forEach((node) => node.remove());
+    qsa('video, audio, source, track', root).forEach((node) => {
+      node.removeAttribute('src');
+      node.removeAttribute('poster');
+      node.removeAttribute('autoplay');
+      node.removeAttribute('preload');
+    });
     qsa('*', root).forEach((node) => {
       Array.from(node.attributes || []).forEach((attribute) => {
         const name = attribute.name;
@@ -824,13 +830,17 @@ function buildReviewRuntimeScript(model) {
     }
   }
   function applyCachedResourceData(root, question) {
-    qsa('img, video, audio, source, track', root).forEach((node) => {
+    qsa('img', root).forEach((node) => {
       copySnapshotMediaSource(node);
-      ['src', 'poster'].forEach((attributeName) => {
-        const value = text(node.getAttribute(attributeName));
-        const dataUrl = getCachedResourceDataUrl(question, value);
-        if (dataUrl) node.setAttribute(attributeName, dataUrl);
-      });
+      const value = text(node.getAttribute('src'));
+      const dataUrl = getCachedResourceDataUrl(question, value);
+      if (dataUrl) node.setAttribute('src', dataUrl);
+    });
+    qsa('video, audio, source, track', root).forEach((node) => {
+      node.removeAttribute('src');
+      node.removeAttribute('poster');
+      node.removeAttribute('autoplay');
+      node.removeAttribute('preload');
     });
     qsa('[style*="url("]', root).forEach((node) => {
       const style = text(node.getAttribute('style'));
@@ -842,24 +852,249 @@ function buildReviewRuntimeScript(model) {
       if (rewritten !== style) node.setAttribute('style', rewritten);
     });
   }
-  function createNativeMediaElement(tag, src, label) {
+  function createNativeMediaElement(_tag, src, label) {
     const wrapper = el('div', { className: 'f120-review-native-media-entry' });
     if (label) wrapper.appendChild(el('div', { className: 'f120-review-native-media-label', text: label }));
-    const media = el(tag, { attrs: { src, controls: 'controls', preload: 'metadata' } });
-    media.controls = true;
-    if (tag === 'video') media.setAttribute('playsinline', 'playsinline');
-    wrapper.appendChild(media);
+    wrapper.appendChild(createAudioPlayer(src, 'Clip', 0));
+    wrapper.appendChild(createDownloadLink(src, 'Download clip', 'free120-review-media.webm'));
+    return wrapper;
+  }
+  function inferMediaMimeType(url, tag) {
+    const value = text(url).toLowerCase();
+    const dataMime = (value.match(/^data:([^;,]+)/) || [])[1];
+    if (dataMime) return dataMime;
+    if (/webm/.test(value)) return 'video/webm';
+    if (/mp4|m4v/.test(value)) return 'video/mp4';
+    if (/mp3/.test(value)) return 'audio/mpeg';
+    if (/wav/.test(value)) return 'audio/wav';
+    if (/ogg|oga/.test(value)) return 'audio/ogg';
+    return tag === 'audio' ? 'audio/webm' : 'video/webm';
+  }
+  function isImageUrl(url) { return /\\.(?:png|jpe?g|gif|webp|svg)(?:\\?|$)/i.test(text(url)); }
+  function isVideoUrl(url) { return /\\.(?:webm|mp4|m4v|mov)(?:\\?|$)/i.test(text(url)); }
+  function isAudioUrl(url) { return /\\.(?:mp3|wav|ogg|oga)(?:\\?|$)/i.test(text(url)); }
+  let sharedAudioContext = null;
+  let activeAudioSource = null;
+  function createDownloadLink(src, label, fileName) {
+    const link = el('a', { className: 'f120-review-media-download', attrs: { href: src, download: fileName || 'review-media.webm' }, text: label || 'Open/download media clip' });
+    return link;
+  }
+  function decodeDataUrlBytes(dataUrl) {
+    const value = text(dataUrl);
+    const commaIndex = value.indexOf(',');
+    if (!/^data:/i.test(value) || commaIndex < 0) return null;
+    const header = value.slice(0, commaIndex);
+    const payload = value.slice(commaIndex + 1);
+    const binary = header.includes(';base64') ? atob(payload) : decodeURIComponent(payload);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return bytes;
+  }
+  function getAudioContext() {
+    const Context = window.AudioContext || window.webkitAudioContext;
+    if (!Context) return null;
+    if (!sharedAudioContext || sharedAudioContext.state === 'closed') sharedAudioContext = new Context();
+    return sharedAudioContext;
+  }
+  function stopActiveAudio() {
+    if (activeAudioSource) {
+      try { activeAudioSource.stop(0); } catch (_error) {}
+      try { activeAudioSource.disconnect(); } catch (_error) {}
+      activeAudioSource = null;
+    }
+    qsa('.f120-review-audio-player.is-playing').forEach((node) => node.classList.remove('is-playing'));
+  }
+  async function playDataUrlAudio(player, src) {
+    const status = qs('.f120-review-audio-status', player);
+    const playButton = qs('.f120-review-audio-play', player);
+    const stopButton = qs('.f120-review-audio-stop', player);
+    const bytes = decodeDataUrlBytes(src);
+    const context = getAudioContext();
+    if (!bytes || !context) {
+      if (status) status.textContent = 'Playback unavailable; use download link.';
+      return;
+    }
+    try {
+      if (status) status.textContent = 'Decoding…';
+      if (context.state === 'suspended') await context.resume();
+      const buffer = await context.decodeAudioData(bytes.buffer.slice(0));
+      stopActiveAudio();
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      source.onended = () => {
+        if (activeAudioSource === source) activeAudioSource = null;
+        player.classList.remove('is-playing');
+        if (status) status.textContent = 'Ready';
+        if (playButton) playButton.disabled = false;
+        if (stopButton) stopButton.disabled = true;
+      };
+      activeAudioSource = source;
+      source.start(0);
+      player.classList.add('is-playing');
+      if (status) status.textContent = 'Playing';
+      if (playButton) playButton.disabled = true;
+      if (stopButton) stopButton.disabled = false;
+    } catch (_error) {
+      if (status) status.textContent = 'Playback failed; use download link.';
+      if (playButton) playButton.disabled = false;
+      if (stopButton) stopButton.disabled = true;
+    }
+  }
+  function createAudioPlayer(src, label, index) {
+    const player = el('div', { className: 'f120-review-audio-player' });
+    player.setAttribute('data-audio-src', text(src));
+    player.setAttribute('data-selected-media-index', String(index + 1));
+    const playButton = el('button', { className: 'f120-review-audio-play', attrs: { type: 'button' }, text: 'Play ' + text(label, 'clip') });
+    const stopButton = el('button', { className: 'f120-review-audio-stop', attrs: { type: 'button', disabled: 'disabled' }, text: 'Stop' });
+    const status = el('span', { className: 'f120-review-audio-status', text: 'Ready' });
+    playButton.addEventListener('click', () => { void playDataUrlAudio(player, text(player.getAttribute('data-audio-src'))); });
+    stopButton.addEventListener('click', () => {
+      stopActiveAudio();
+      status.textContent = 'Stopped';
+      playButton.disabled = false;
+      stopButton.disabled = true;
+    });
+    player.append(playButton, stopButton, status);
+    return player;
+  }
+  function getPositionNumber(index) {
+    return index < 4 ? index + 1 : index;
+  }
+  function getPositionLabel(index) {
+    if (index === 3) return 'Position 4 (diaphragm)';
+    if (index === 4) return 'Position 4 (bell)';
+    return 'Position ' + getPositionNumber(index);
+  }
+  function setMediaSource(mediaEl, src, index, wrapper) {
+    if (mediaEl) {
+      mediaEl.setAttribute('data-audio-src', text(src));
+      mediaEl.setAttribute('data-selected-media-index', String(index + 1));
+      mediaEl.setAttribute('data-selected-media-type', inferMediaMimeType(src, 'video'));
+      const playButton = qs('.f120-review-audio-play', mediaEl);
+      const stopButton = qs('.f120-review-audio-stop', mediaEl);
+      const status = qs('.f120-review-audio-status', mediaEl);
+      if (playButton) {
+        playButton.textContent = 'Play ' + getPositionLabel(index);
+        playButton.disabled = false;
+      }
+      if (stopButton) stopButton.disabled = true;
+      if (status) status.textContent = 'Ready';
+      stopActiveAudio();
+    }
+    if (!wrapper) return;
+    const slot = wrapper.querySelector('.f120-review-media-download-slot');
+    if (slot) {
+      replaceChildren(slot, [createDownloadLink(src, 'Download ' + getPositionLabel(index) + ' clip', 'free120-review-position-' + (index + 1) + '.webm')]);
+    }
+  }
+  function getPlayableReviewMediaUrl(question, url) {
+    return getReviewMediaUrl(question, url);
+  }
+  function getSnapshotMediaInteractions(question) {
+    const entries = question && question.snapshot && question.snapshot.metadata && Array.isArray(question.snapshot.metadata.mediaInteractions)
+      ? question.snapshot.metadata.mediaInteractions
+      : [];
+    const seen = new Set();
+    return entries.filter((entry) => {
+      if (!entry || typeof entry !== 'object') return false;
+      const key = [entry.mediaId || '', entry.src || '', entry.image || '', entry.coords || '', entry.label || ''].join('|');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return Boolean(entry.src || entry.image || entry.coords || entry.label);
+    });
+  }
+  function parseHotspotCoords(coords) {
+    const numbers = text(coords).split(',').map((part) => Number(part.trim())).filter((value) => Number.isFinite(value));
+    if (numbers.length >= 3) return { x: numbers[0], y: numbers[1], r: Math.max(6, numbers[2]) };
+    if (numbers.length >= 2) return { x: numbers[0], y: numbers[1], r: 10 };
+    return null;
+  }
+  function fallbackHotspotCoords(index) {
+    const points = [
+      { x: 86, y: 94, r: 15 },
+      { x: 128, y: 90, r: 15 },
+      { x: 133, y: 141, r: 15 },
+      { x: 174, y: 174, r: 15 },
+      { x: 174, y: 174, r: 15 },
+      { x: 81, y: 17, r: 15 },
+      { x: 137, y: 17, r: 15 },
+    ];
+    return points[index] || { x: 18 + (index % 7) * 30, y: 18, r: 10 };
+  }
+  function setSelectedHotspot(wrapper, index) {
+    wrapper.querySelectorAll('.f120-review-hotspot-button').forEach((node) => node.classList.toggle('is-selected', Number(node.getAttribute('data-index')) === index + 1));
+    wrapper.querySelectorAll('.f120-review-hotspot-marker').forEach((node) => node.classList.toggle('is-selected', Number(node.getAttribute('data-index')) === index + 1));
+  }
+  function createHotspotButton(interaction, index, mediaEl, diagram) {
+    const button = el('button', { className: 'f120-review-hotspot-button', attrs: { type: 'button' }, text: text(interaction.label, getPositionLabel(index)) });
+    button.setAttribute('data-index', String(index + 1));
+    if (interaction.coords) button.setAttribute('data-coords', text(interaction.coords));
+    button.addEventListener('click', () => {
+      const src = getPlayableReviewMediaUrl(diagram.question, interaction.src);
+      setMediaSource(mediaEl, src, index, diagram);
+      setSelectedHotspot(diagram, index);
+    });
+    return button;
+  }
+  function createHotspotMarker(interaction, index, mediaEl, wrapper) {
+    const coords = parseHotspotCoords(interaction.coords);
+    const marker = el('button', { className: 'f120-review-hotspot-marker', attrs: { type: 'button', title: text(interaction.label, getPositionLabel(index)) }, text: String(getPositionNumber(index)) });
+    marker.setAttribute('data-index', String(index + 1));
+    const markerCoords = coords || fallbackHotspotCoords(index);
+    marker.style.left = markerCoords.x + 'px';
+    marker.style.top = markerCoords.y + 'px';
+    marker.style.width = Math.max(18, markerCoords.r * 2) + 'px';
+    marker.style.height = Math.max(18, markerCoords.r * 2) + 'px';
+    marker.addEventListener('click', () => {
+      const src = getPlayableReviewMediaUrl(wrapper.question, interaction.src);
+      setMediaSource(mediaEl, src, index, wrapper);
+      setSelectedHotspot(wrapper, index);
+    });
+    return marker;
+  }
+  function createInteractiveMediaFallback(question, interactions) {
+    const wrapper = el('div', { className: 'f120-review-native-media-fallback f120-review-native-media-fallback--interactive' });
+    wrapper.question = question;
+    const imageUrl = interactions.map((entry) => entry.image).find(Boolean) || interactions.map((entry) => entry.src).find(isImageUrl);
+    const playable = interactions.filter((entry) => entry.src && (isVideoUrl(entry.src) || isAudioUrl(entry.src)));
+    const first = playable[0] || null;
+    const media = first ? createAudioPlayer(getPlayableReviewMediaUrl(question, first.src), 'Position 1', 0) : null;
+    const downloadSlot = first ? el('div', { className: 'f120-review-media-download-slot' }) : null;
+    if (imageUrl) {
+      const diagram = el('div', { className: 'f120-review-hotspot-diagram' });
+      diagram.appendChild(el('img', { attrs: { src: getReviewMediaUrl(question, imageUrl), alt: 'Review media diagram' } }));
+      playable.forEach((entry, index) => diagram.appendChild(createHotspotMarker(entry, index, media, wrapper)));
+      wrapper.appendChild(diagram);
+    }
+    if (media) {
+      wrapper.appendChild(media);
+      if (downloadSlot) wrapper.appendChild(downloadSlot);
+      setMediaSource(media, getPlayableReviewMediaUrl(question, first.src), 0, wrapper);
+    }
+    if (playable.length > 1) {
+      const controls = el('div', { className: 'f120-review-hotspot-controls' });
+      playable.forEach((entry, index) => controls.appendChild(createHotspotButton(entry, index, media, wrapper)));
+      wrapper.appendChild(controls);
+      setSelectedHotspot(wrapper, 0);
+    }
     return wrapper;
   }
   function renderNativeMediaFallback(root, question) {
     const urls = (question && question.snapshot && Array.isArray(question.snapshot.resourceUrls)) ? question.snapshot.resourceUrls : [];
-    if (!urls.length) return;
-    const imageUrls = urls.filter((url) => /\\.(?:png|jpe?g|gif|webp|svg)(?:\\?|$)/i.test(text(url)));
-    const videoUrls = urls.filter((url) => /\\.(?:webm|mp4|m4v|mov)(?:\\?|$)/i.test(text(url)));
-    const audioUrls = urls.filter((url) => /\\.(?:mp3|wav|ogg|oga)(?:\\?|$)/i.test(text(url)));
-    if (!imageUrls.length && !videoUrls.length && !audioUrls.length) return;
-    qsa('.NBMediaPlayer, .media-player', root).forEach((container) => {
-      if (container.querySelector('video, audio, img, .f120-review-native-media-fallback')) return;
+    const interactions = getSnapshotMediaInteractions(question);
+    if (!urls.length && !interactions.length) return;
+    const imageUrls = urls.filter(isImageUrl);
+    const videoUrls = urls.filter(isVideoUrl);
+    const audioUrls = urls.filter(isAudioUrl);
+    if (!imageUrls.length && !videoUrls.length && !audioUrls.length && !interactions.length) return;
+    qsa('.NBMediaPlayer', root).forEach((container) => {
+      if (container.querySelector('.f120-review-native-media-fallback')) return;
+      if (interactions.length) {
+        container.appendChild(createInteractiveMediaFallback(question, interactions));
+        return;
+      }
+      if (container.querySelector('video, audio, img')) return;
       const fallback = el('div', { className: 'f120-review-native-media-fallback' });
       imageUrls.slice(0, 1).forEach((url) => fallback.appendChild(el('img', { attrs: { src: getReviewMediaUrl(question, url), alt: 'Review media diagram' } })));
       videoUrls.slice(0, 12).forEach((url, index) => fallback.appendChild(createNativeMediaElement('video', getReviewMediaUrl(question, url), 'Media clip ' + (index + 1))));
@@ -876,11 +1111,12 @@ function buildReviewRuntimeScript(model) {
       }
     });
     qsa('video, audio', root).forEach((node) => {
-      node.controls = true;
-      node.setAttribute('controls', 'controls');
-      node.setAttribute('preload', 'metadata');
+      qsa('source', node).forEach((source) => source.removeAttribute('src'));
+      node.removeAttribute('src');
+      node.removeAttribute('poster');
       node.removeAttribute('autoplay');
-      try { if (typeof node.load === 'function') node.load(); } catch (_error) {}
+      node.setAttribute('preload', 'none');
+      node.classList.add('f120-review-media-disabled-by-csp');
     });
     qsa('.NBMediaPlayer, .media-player, .media.magnify, [id^="media-"], [id^="inline-"]', root).forEach((node) => {
       node.classList.add('f120-review-media-ready');
@@ -971,7 +1207,10 @@ function buildReviewRuntimeScript(model) {
     renderNativeMediaFallback(medley, question);
     normalizeSnapshotMedia(medley);
     applyCachedResourceData(medley, question);
-    qsa('video, audio', medley).forEach((node) => { try { if (typeof node.load === 'function') node.load(); } catch (_error) {} });
+    qsa('video, audio', medley).forEach((node) => {
+      node.removeAttribute('src');
+      qsa('source', node).forEach((source) => source.removeAttribute('src'));
+    });
     decorateOptionRows(medley, question);
     insertTimeSpent(root && root.nodeType === 1 ? root : medley, question);
   }
@@ -1160,6 +1399,7 @@ function buildReviewHtml(attempt, snapshots = [], options = {}) {
   <meta charset="utf-8">
   <base href="${escapeHtml(REVIEW_RESOURCE_BASE_URL)}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data:; img-src 'self' data: https://orientation.nbme.org; media-src 'self' data: https://orientation.nbme.org; style-src 'unsafe-inline'; script-src 'unsafe-inline' data:">
   <title>${escapeHtml(title)}</title>
   <style>${REVIEW_PAGE_CSS}</style>
 </head>
