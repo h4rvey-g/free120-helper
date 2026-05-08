@@ -1,8 +1,15 @@
-import { SCRIPT, ATTEMPT_STATUS } from '../core/constants.js';
+import { SCRIPT } from '../core/constants.js';
 import { coerceNonNegativeInteger, hasFunction, isObject, normalizeString } from '../core/data.js';
 import { nowIso } from '../core/logger.js';
 import { buildAttemptCompletionPatch, buildAttemptScoreSummary } from '../scoring/grader.js';
 import { loadQBankCaptureContext, resolveQBankCaptureForItems } from '../qbank/cache-lookup.js';
+import { createElement, removeChildren, setMessage } from './dom.js';
+import {
+  hasAttemptReviewEvidence,
+  isAttemptReviewReady,
+  pickLatestEndExamAttempt,
+  shouldPreferStoredEndExamAttempt,
+} from '../review/readiness.js';
 
 const ACTIVE_EXAM_PILL_STYLE_ID = 'f120-active-exam-pill-style';
 const END_EXAM_REVIEW_CTA_ID = 'f120-end-exam-review-cta';
@@ -190,36 +197,6 @@ function formatActiveExamProgress(progress) {
   return `${answered}/${total} · Block ${blockNumber}`;
 }
 
-function getAttemptReviewEvidenceCount(attempt) {
-  if (!isObject(attempt)) {
-    return 0;
-  }
-  const source = isObject(attempt.source) ? attempt.source : {};
-  const metadata = isObject(source.itemMetadataByQuestionId) ? source.itemMetadataByQuestionId : {};
-  const scoreSummary = isObject(attempt.scoreSummary) ? attempt.scoreSummary : {};
-  const scoreTotal = coerceNonNegativeInteger(scoreSummary.total, 0)
-    || coerceNonNegativeInteger(scoreSummary.overallScore && scoreSummary.overallScore.total, 0)
-    || (Array.isArray(scoreSummary.questionResults) ? scoreSummary.questionResults.length : 0);
-  return Math.max(
-    Array.isArray(attempt.questionIds) ? attempt.questionIds.length : 0,
-    Object.keys(isObject(attempt.responses) ? attempt.responses : {}).length,
-    Object.keys(isObject(attempt.correctAnswers) ? attempt.correctAnswers : {}).length,
-    Object.keys(metadata).length,
-    scoreTotal
-  );
-}
-
-function hasAttemptReviewEvidence(attempt) {
-  return getAttemptReviewEvidenceCount(attempt) > 0;
-}
-
-function isAttemptReviewReady(attempt) {
-  if (!attempt) {
-    return false;
-  }
-  return Boolean(attempt.reviewReady) || attempt.status === ATTEMPT_STATUS.COMPLETED || attempt.status === ATTEMPT_STATUS.PARTIAL;
-}
-
 function isEndExamRoute(currentLocation) {
   const href = normalizeString(currentLocation && currentLocation.href, '');
   const hash = normalizeString(currentLocation && currentLocation.hash, '');
@@ -250,69 +227,6 @@ function deriveEndExamReviewState(candidate = {}) {
     reviewEvidence,
     reason: visible ? 'end-exam-route' : 'not-ended',
   });
-}
-
-function parseDateMs(value) {
-  const parsed = Date.parse(normalizeString(value, ''));
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function isQBankCacheLikeAttempt(attempt) {
-  const id = normalizeString(attempt && attempt.id, '');
-  const source = isObject(attempt && attempt.source) ? attempt.source : {};
-  return id.startsWith('qbank-cache:')
-    || normalizeString(source.cacheKind, '') === 'qbank'
-    || normalizeString(source.createdBy, '') === 'qbank-cache-controller';
-}
-
-function getAttemptSortTime(attempt) {
-  return Math.max(parseDateMs(attempt && attempt.updatedAt), parseDateMs(attempt && attempt.completedAt), parseDateMs(attempt && attempt.startedAt), parseDateMs(attempt && attempt.createdAt));
-}
-
-function pickLatestEndExamAttempt(attempts) {
-  const list = (Array.isArray(attempts) ? attempts.filter(Boolean) : []).filter((attempt) => !isQBankCacheLikeAttempt(attempt));
-  if (!list.length) {
-    return null;
-  }
-  const sorted = list.slice().sort((left, right) => {
-    const leftEvidence = getAttemptReviewEvidenceCount(left);
-    const rightEvidence = getAttemptReviewEvidenceCount(right);
-    if (Boolean(leftEvidence) !== Boolean(rightEvidence)) {
-      return rightEvidence - leftEvidence;
-    }
-    const leftTime = getAttemptSortTime(left);
-    const rightTime = getAttemptSortTime(right);
-    return rightTime - leftTime;
-  });
-  return sorted[0] || null;
-}
-
-function shouldPreferStoredEndExamAttempt(currentAttempt, storedAttempt) {
-  if (!storedAttempt || isQBankCacheLikeAttempt(storedAttempt)) {
-    return false;
-  }
-  if (!currentAttempt) {
-    return true;
-  }
-  const currentId = normalizeString(currentAttempt.id, '');
-  const storedId = normalizeString(storedAttempt.id, '');
-  if (currentId && storedId && currentId === storedId) {
-    return false;
-  }
-  const currentEvidence = getAttemptReviewEvidenceCount(currentAttempt);
-  const storedEvidence = getAttemptReviewEvidenceCount(storedAttempt);
-  if (storedEvidence > 0 && currentEvidence <= 0) {
-    return true;
-  }
-  if (currentEvidence > 0 && storedEvidence <= 0) {
-    return false;
-  }
-  if (isAttemptReviewReady(storedAttempt) && !isAttemptReviewReady(currentAttempt)) {
-    return true;
-  }
-  const storedTime = getAttemptSortTime(storedAttempt);
-  const currentTime = getAttemptSortTime(currentAttempt);
-  return storedTime > currentTime;
 }
 
 function uniquePositiveIntegers(values) {
@@ -647,49 +561,6 @@ function injectActiveExamPillStyles(adapterDocument) {
   (adapterDocument.head || adapterDocument.documentElement).appendChild(style);
 }
 
-function createElement(adapterDocument, tagName, options = {}, children = []) {
-  const element = adapterDocument.createElement(tagName);
-  if (options.id) {
-    element.id = options.id;
-  }
-  if (options.className) {
-    element.className = options.className;
-  }
-  if (options.text !== undefined) {
-    element.textContent = normalizeString(options.text, '');
-  }
-  if (options.type) {
-    element.type = options.type;
-  }
-  if (options.hidden) {
-    element.hidden = true;
-  }
-  if (isObject(options.attributes)) {
-    Object.entries(options.attributes).forEach(([name, value]) => {
-      if (value !== null && value !== undefined) {
-        element.setAttribute(name, String(value));
-      }
-    });
-  }
-  (Array.isArray(children) ? children : [children]).forEach((child) => {
-    if (child === null || child === undefined) {
-      return;
-    }
-    if (typeof child === 'string') {
-      element.appendChild(adapterDocument.createTextNode(child));
-      return;
-    }
-    element.appendChild(child);
-  });
-  return element;
-}
-
-function removeChildren(element) {
-  while (element && element.firstChild) {
-    element.removeChild(element.firstChild);
-  }
-}
-
 function appendDetailRow(adapterDocument, container, label, value) {
   container.appendChild(createElement(adapterDocument, 'div', {
     className: 'f120-active-exam-pill__detail-label',
@@ -699,13 +570,6 @@ function appendDetailRow(adapterDocument, container, label, value) {
     className: 'f120-active-exam-pill__detail-value',
     text: value,
   }));
-}
-
-function setMessage(messageElement, message, kind = 'info') {
-  const text = normalizeString(message, '');
-  messageElement.hidden = !text;
-  messageElement.dataset.kind = normalizeString(kind, 'info');
-  messageElement.textContent = text;
 }
 
 function summarizeQBankKeys(attempt) {
@@ -1236,14 +1100,9 @@ export {
   END_EXAM_REVIEW_LOCKED_MESSAGE,
   deriveActiveExamProgress,
   formatActiveExamProgress,
-  isAttemptReviewReady,
-  hasAttemptReviewEvidence,
-  getAttemptReviewEvidenceCount,
   isEndExamRoute,
   isTerminalAdapterState,
   deriveEndExamReviewState,
-  pickLatestEndExamAttempt,
-  shouldPreferStoredEndExamAttempt,
   buildEndExamCompletionAdapterState,
   buildEndExamCompletionPatch,
   refreshAttemptQBankKeysForEndExam,

@@ -1,6 +1,8 @@
 import { SCRIPT, DB_SCHEMA, ATTEMPT_STATUS, EXPORT_TYPES, FULL_BACKUP_WARNING } from '../core/constants.js';
 import { coerceNonNegativeInteger, coercePositiveInteger, hasFunction, isObject, isPlainObject, normalizeString, uniqueNormalizedStrings as uniqueStrings } from '../core/data.js';
 import { createQBankCacheAttemptId, discoverLaunchQuestionDefinitions } from '../qbank/cache-controller.js';
+import { canOpenAttemptReview as canOpenReviewFromHistory, isQBankCacheAttempt } from '../review/readiness.js';
+import { createElement, removeChildren, setMessage } from './dom.js';
 
 const LAUNCH_HISTORY_STYLE_ID = 'f120-launch-history-style';
 const LAUNCH_HISTORY_ROOT_ID = 'f120-launch-history';
@@ -276,42 +278,6 @@ function formatAttemptStatus(attempt) {
     return 'Abandoned';
   }
   return status || 'Unknown';
-}
-
-function getAttemptReviewEvidenceCount(attempt) {
-  if (!isObject(attempt)) {
-    return 0;
-  }
-  const source = isObject(attempt.source) ? attempt.source : {};
-  const metadata = isObject(source.itemMetadataByQuestionId) ? source.itemMetadataByQuestionId : {};
-  const scoreSummary = isObject(attempt.scoreSummary) ? attempt.scoreSummary : {};
-  const scoreTotal = coerceNonNegativeInteger(scoreSummary.total, 0)
-    || coerceNonNegativeInteger(scoreSummary.overallScore && scoreSummary.overallScore.total, 0)
-    || (Array.isArray(scoreSummary.questionResults) ? scoreSummary.questionResults.length : 0);
-  return Math.max(
-    Array.isArray(attempt.questionIds) ? attempt.questionIds.length : 0,
-    Object.keys(isObject(attempt.responses) ? attempt.responses : {}).length,
-    Object.keys(isObject(attempt.correctAnswers) ? attempt.correctAnswers : {}).length,
-    Object.keys(metadata).length,
-    scoreTotal
-  );
-}
-
-function canOpenReviewFromHistory(attempt) {
-  if (!isObject(attempt) || getAttemptReviewEvidenceCount(attempt) <= 0) {
-    return false;
-  }
-  return Boolean(attempt.reviewReady)
-    || attempt.status === ATTEMPT_STATUS.COMPLETED
-    || attempt.status === ATTEMPT_STATUS.PARTIAL;
-}
-
-function isQBankCacheAttempt(attempt) {
-  const id = normalizeString(attempt && attempt.id, '');
-  const source = isObject(attempt && attempt.source) ? attempt.source : {};
-  return id.startsWith('qbank-cache:')
-    || normalizeString(source.cacheKind, '') === 'qbank'
-    || normalizeString(source.createdBy, '') === 'qbank-cache-controller';
 }
 
 function getQBankKnownAnswerCount(attempt) {
@@ -847,66 +813,6 @@ function injectLaunchHistoryStyles(adapterDocument) {
     }
   `;
   (adapterDocument.head || adapterDocument.documentElement).appendChild(style);
-}
-
-function createElement(adapterDocument, tagName, options = {}, children = []) {
-  const element = adapterDocument.createElement(tagName);
-  if (options.id) {
-    element.id = options.id;
-  }
-  if (options.className) {
-    element.className = options.className;
-  }
-  if (options.text !== undefined) {
-    element.textContent = normalizeString(options.text, '');
-  }
-  if (options.type) {
-    element.type = options.type;
-  }
-  if (options.value !== undefined) {
-    element.value = normalizeString(options.value, '');
-  }
-  if (options.hidden) {
-    element.hidden = true;
-  }
-  if (isObject(options.dataset)) {
-    Object.entries(options.dataset).forEach(([key, value]) => {
-      if (value !== null && value !== undefined) {
-        element.dataset[key] = String(value);
-      }
-    });
-  }
-  if (isObject(options.attributes)) {
-    Object.entries(options.attributes).forEach(([name, value]) => {
-      if (value !== null && value !== undefined) {
-        element.setAttribute(name, String(value));
-      }
-    });
-  }
-  (Array.isArray(children) ? children : [children]).forEach((child) => {
-    if (child === null || child === undefined) {
-      return;
-    }
-    if (typeof child === 'string') {
-      element.appendChild(adapterDocument.createTextNode(child));
-      return;
-    }
-    element.appendChild(child);
-  });
-  return element;
-}
-
-function removeChildren(element) {
-  while (element && element.firstChild) {
-    element.removeChild(element.firstChild);
-  }
-}
-
-function setMessage(messageElement, message, kind = 'info') {
-  const text = normalizeString(message, '');
-  messageElement.hidden = !text;
-  messageElement.dataset.kind = normalizeString(kind, 'info');
-  messageElement.textContent = text;
 }
 
 function clearNamespacedStorageArea(storageArea) {

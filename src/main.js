@@ -34,21 +34,23 @@ const attemptStore = createAttemptStore({
   databaseName: STORAGE_KEYS.INDEXED_DB,
   logger,
 });
-const webfredAdapter = createWebfredSiteAdapter({
-  window,
-  document,
-  logger,
-});
-const trackingEngine = createTrackingEngine({
-  window,
-  document,
-  logger,
-  storage: attemptStore,
-  webfredAdapter,
-  runtimeContext,
-});
+let webfredAdapter = null;
+let trackingEngine = null;
 let activeExamPill = null;
 if (runtimeContext.pageKind === PAGE_KIND.WEBFRED) {
+  webfredAdapter = createWebfredSiteAdapter({
+    window,
+    document,
+    logger,
+  });
+  trackingEngine = createTrackingEngine({
+    window,
+    document,
+    logger,
+    storage: attemptStore,
+    webfredAdapter,
+    runtimeContext,
+  });
   try {
     activeExamPill = createActiveExamPill({
       window,
@@ -94,10 +96,10 @@ if (runtimeContext.pageKind === PAGE_KIND.LAUNCH) {
 const helperSettings = Object.freeze({
   ...settingsStore,
   getTrackingStatus() {
-    return trackingEngine.getStatus();
+    return trackingEngine ? trackingEngine.getStatus() : TRACKING_ENGINE_STATUS.IDLE;
   },
   flushTracking(reason = 'settings-flush') {
-    return trackingEngine.flush(reason);
+    return trackingEngine ? trackingEngine.flush(reason) : Promise.resolve(null);
   },
 });
 

@@ -15,12 +15,14 @@ import {
   deriveActiveExamProgress,
   deriveEndExamReviewState,
   formatActiveExamProgress,
-  isAttemptReviewReady,
   isEndExamRoute,
-  pickLatestEndExamAttempt,
-  shouldPreferStoredEndExamAttempt,
   refreshAttemptQBankKeysForEndExam,
 } from '../src/ui/active-exam-pill.js';
+import {
+  isAttemptReviewReady,
+  pickLatestEndExamAttempt,
+  shouldPreferStoredEndExamAttempt,
+} from '../src/review/readiness.js';
 import { detectRuntimeContext } from '../src/core/runtime-context.js';
 import { createSyntheticAdapterState, createSyntheticAttempt } from './test-utils/fixtures.mjs';
 
