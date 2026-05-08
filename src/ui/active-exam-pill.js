@@ -1,4 +1,5 @@
 import { SCRIPT, ATTEMPT_STATUS } from '../core/constants.js';
+import { coerceNonNegativeInteger, hasFunction, isObject, normalizeString } from '../core/data.js';
 import { nowIso } from '../core/logger.js';
 import { buildAttemptCompletionPatch, buildAttemptScoreSummary } from '../scoring/grader.js';
 import { loadQBankCaptureContext, resolveQBankCaptureForItems } from '../qbank/cache-lookup.js';
@@ -8,35 +9,8 @@ const END_EXAM_REVIEW_CTA_ID = 'f120-end-exam-review-cta';
 const REVIEW_READY_EVENT = 'free120-helper:review-ready';
 const END_EXAM_REVIEW_LOCKED_MESSAGE = 'Review unlocks after the helper finishes local grading.';
 
-function isObject(value) {
-  return Boolean(value && typeof value === 'object');
-}
-
-function normalizeString(value, fallback = '') {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed || fallback;
-  }
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return String(value);
-  }
-  return fallback;
-}
-
-function coerceNonNegativeInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  if (Number.isInteger(parsed) && parsed >= 0) {
-    return parsed;
-  }
-  return fallback;
-}
-
 function isNonEmptyAnswer(value) {
   return normalizeString(value, '') !== '';
-}
-
-function hasFunction(value, name) {
-  return Boolean(value && typeof value[name] === 'function');
 }
 
 function truncateMiddle(value, maxLength = 28) {

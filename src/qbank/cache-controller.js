@@ -1,7 +1,7 @@
 import { SCRIPT, ATTEMPT_STATUS, ANSWER_KEY_CAPTURE_STATUS } from '../core/constants.js';
 import { nowIso } from '../core/logger.js';
 import { buildAttemptScoreSummary } from '../scoring/grader.js';
-import { normalizeString, createQuestionSnapshotId } from '../storage/attempt-store.js';
+import { createQuestionSnapshotId, normalizeString } from '../core/data.js';
 import { buildQuestionIdentity, extractChoicesFromDom, extractResourceUrls } from '../webfred/adapter.js';
 
 const QBANK_CACHE_ATTEMPT_PREFIX = 'qbank-cache';

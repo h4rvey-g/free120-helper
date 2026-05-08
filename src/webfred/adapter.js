@@ -1,7 +1,7 @@
 import { STORAGE_KEYS, WEBFRED_ADAPTER_STATUS, WEBFRED_STATE_SOURCE, WEBFRED_ADAPTER_CONFIG, WEBFRED_ANGULAR_SERVICE_CANDIDATES } from '../core/constants.js';
+import { coercePositiveInteger, firstNonEmpty, isPlainObject, normalizeString, sanitizeJsonCompatible, uniqueNormalizedStrings } from '../core/data.js';
 import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
-import { isPlainObject, normalizeString, sanitizeJsonCompatible } from '../storage/attempt-store.js';
 
 function createWebfredAdapterError(message, details) {
   const error = new Error(message);
@@ -28,33 +28,11 @@ function safeNowMs(adapterWindow) {
   return Date.now();
 }
 
-function firstNonEmpty(values, fallback = '') {
-  if (!Array.isArray(values)) {
-    return fallback;
-  }
-
-  for (const value of values) {
-    const normalized = normalizeString(value);
-    if (normalized) {
-      return normalized;
-    }
-  }
-  return fallback;
-}
-
 function normalizeIdentifierPart(value) {
   return normalizeString(value, '')
     .replace(/\s+/g, '-')
     .replace(/[^a-zA-Z0-9_.:-]/g, '')
     .slice(0, 120);
-}
-
-function coercePositiveInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  if (Number.isInteger(parsed) && parsed > 0) {
-    return parsed;
-  }
-  return fallback;
 }
 
 function normalizeMaybeBoolean(value) {
@@ -128,19 +106,6 @@ function isProbablyVisible(element, adapterWindow) {
   } catch (_error) {}
 
   return true;
-}
-
-function uniqueNormalizedStrings(values) {
-  const seen = new Set();
-  const result = [];
-  (Array.isArray(values) ? values : []).forEach((value) => {
-    const normalized = normalizeString(value, '');
-    if (normalized && !seen.has(normalized)) {
-      seen.add(normalized);
-      result.push(normalized);
-    }
-  });
-  return result;
 }
 
 function buildQuestionIdentity(parts = {}) {

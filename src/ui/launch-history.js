@@ -1,34 +1,10 @@
 import { SCRIPT, DB_SCHEMA, ATTEMPT_STATUS, EXPORT_TYPES, FULL_BACKUP_WARNING } from '../core/constants.js';
+import { coerceNonNegativeInteger, coercePositiveInteger, hasFunction, isObject, isPlainObject, normalizeString, uniqueNormalizedStrings as uniqueStrings } from '../core/data.js';
 import { createQBankCacheAttemptId, discoverLaunchQuestionDefinitions } from '../qbank/cache-controller.js';
-import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
 
 const LAUNCH_HISTORY_STYLE_ID = 'f120-launch-history-style';
 const LAUNCH_HISTORY_ROOT_ID = 'f120-launch-history';
 const IMPORT_REPLACE_WARNING = 'Replace mode overwrites local attempts when imported attempt ids conflict. This cannot be undone unless you exported a backup first.';
-
-function isObject(value) {
-  return Boolean(value && typeof value === 'object');
-}
-
-function hasFunction(value, name) {
-  return Boolean(value && typeof value[name] === 'function');
-}
-
-function coerceNonNegativeInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  if (Number.isFinite(parsed) && parsed >= 0) {
-    return Math.floor(parsed);
-  }
-  return fallback;
-}
-
-function coercePositiveInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  if (Number.isInteger(parsed) && parsed > 0) {
-    return parsed;
-  }
-  return fallback;
-}
 
 function safeDate(value) {
   const text = normalizeString(value, '');
@@ -104,19 +80,6 @@ function deriveAttemptDurationMs(attempt) {
     return 0;
   }
   return completedAt - startedAt;
-}
-
-function uniqueStrings(values) {
-  const seen = new Set();
-  const result = [];
-  (Array.isArray(values) ? values : []).forEach((value) => {
-    const text = normalizeString(value, '');
-    if (text && !seen.has(text)) {
-      seen.add(text);
-      result.push(text);
-    }
-  });
-  return result;
 }
 
 function normalizeDisplayText(value) {

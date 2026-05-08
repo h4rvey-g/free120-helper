@@ -1,6 +1,6 @@
 import { ATTEMPT_STATUS } from '../core/constants.js';
+import { coerceNonNegativeInteger, coercePositiveInteger, isPlainObject, normalizeString, uniqueNormalizedStrings as uniqueStrings } from '../core/data.js';
 import { nowIso } from '../core/logger.js';
-import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
 
 const GRADE_STATUS = Object.freeze({
   CORRECT: 'correct',
@@ -8,29 +8,6 @@ const GRADE_STATUS = Object.freeze({
   OMITTED: 'omitted',
   UNKNOWN: 'unknown',
 });
-
-function coerceNonNegativeInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
-function coercePositiveInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function uniqueStrings(values) {
-  const seen = new Set();
-  const result = [];
-  (Array.isArray(values) ? values : []).forEach((value) => {
-    const normalized = normalizeString(value, '');
-    if (normalized && !seen.has(normalized)) {
-      seen.add(normalized);
-      result.push(normalized);
-    }
-  });
-  return result;
-}
 
 function normalizeAnswerId(value) {
   return normalizeString(value, '');

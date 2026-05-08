@@ -1,30 +1,8 @@
 import { ANSWER_KEY_CAPTURE_STATUS } from '../core/constants.js';
-import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
+import { arrayOrEmpty, coercePositiveInteger, normalizeString, plainObjectOrEmpty, uniqueNormalizedStrings } from '../core/data.js';
 import { QBANK_CACHE_ATTEMPT_PREFIX } from './cache-controller.js';
-function coercePositiveInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-function plainObjectOrEmpty(value) {
-  return isPlainObject(value) ? value : {};
-}
-function arrayOrEmpty(value) {
-  return Array.isArray(value) ? value : [];
-}
-const MAX_QBANK_REVIEW_ITEMS_PER_BLOCK = 40;
 
-function uniqueNormalizedStrings(values) {
-  const seen = new Set();
-  const result = [];
-  arrayOrEmpty(values).forEach((value) => {
-    const normalized = normalizeString(value, '');
-    if (normalized && !seen.has(normalized)) {
-      seen.add(normalized);
-      result.push(normalized);
-    }
-  });
-  return result;
-}
+const MAX_QBANK_REVIEW_ITEMS_PER_BLOCK = 40;
 function isQBankCacheAttempt(attempt) {
   const id = normalizeString(attempt && attempt.id, '');
   const source = plainObjectOrEmpty(attempt && attempt.source);

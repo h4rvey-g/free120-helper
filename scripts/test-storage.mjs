@@ -3,14 +3,16 @@ import { createFakeIndexedDB } from './test-utils/fake-indexeddb.mjs';
 import { createSyntheticAttempt, createSyntheticSnapshots } from './test-utils/fixtures.mjs';
 import { ATTEMPT_STATUS, DB_SCHEMA, EXPORT_TYPES, FULL_BACKUP_WARNING } from '../src/core/constants.js';
 import {
-  createAttemptStore,
   createQuestionSnapshotId,
-  createStorageValidationError,
-  normalizeAttemptStatus,
   normalizeIdArray,
   normalizeRecord,
   normalizeStringArray,
   sanitizeJsonCompatible,
+} from '../src/core/data.js';
+import {
+  createAttemptStore,
+  createStorageValidationError,
+  normalizeAttemptStatus,
 } from '../src/storage/attempt-store.js';
 
 globalThis.window = { indexedDB: createFakeIndexedDB() };

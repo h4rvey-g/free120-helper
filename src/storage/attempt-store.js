@@ -1,5 +1,19 @@
 import { SCRIPT, DB_SCHEMA, ATTEMPT_STATUS, EXPORT_TYPES, FULL_BACKUP_WARNING } from '../core/constants.js';
 import { nowIso } from '../core/logger.js';
+import {
+  createQuestionSnapshotId,
+  createStorageId,
+  isNonEmptyString,
+  isPlainObject,
+  normalizeIdArray,
+  normalizeNullableRecord,
+  normalizePositiveInteger,
+  normalizeRecord,
+  normalizeRecordArray,
+  normalizeString,
+  normalizeStringArray,
+  sanitizeJsonCompatible,
+} from '../core/data.js';
 
 function createStorageError(message, cause) {
   const error = new Error(message);
@@ -17,27 +31,6 @@ function createStorageValidationError(message, details) {
   error.name = 'Free120StorageValidationError';
   error.details = details || null;
   return error;
-}
-
-function isPlainObject(value) {
-  return Object.prototype.toString.call(value) === '[object Object]';
-}
-
-function isNonEmptyString(value) {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-function normalizeString(value, fallback = '') {
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    return trimmed || fallback;
-  }
-
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return String(value);
-  }
-
-  return fallback;
 }
 
 function normalizeAttemptStatus(value) {
@@ -69,120 +62,6 @@ function normalizeNullableIsoDate(value) {
 
   const parsed = normalizeIsoDate(value, null);
   return parsed || null;
-}
-
-function normalizePositiveInteger(value, fallback) {
-  const parsed = Number(value);
-  if (Number.isInteger(parsed) && parsed > 0) {
-    return parsed;
-  }
-  return fallback;
-}
-
-function createStorageId(prefix) {
-  const safePrefix = normalizeString(prefix, 'record');
-  if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
-    return `${safePrefix}:${crypto.randomUUID()}`;
-  }
-
-  const randomPart = Math.random().toString(36).slice(2, 12);
-  const timePart = Date.now().toString(36);
-  return `${safePrefix}:${timePart}:${randomPart}`;
-}
-
-function createQuestionSnapshotId(attemptId, questionId) {
-  return `${normalizeString(attemptId, 'attempt')}:${normalizeString(questionId, 'question')}`;
-}
-
-function sanitizeJsonCompatible(value, depth = 0, seen = []) {
-  if (depth > 50) {
-    throw createStorageValidationError('Stored records must not exceed 50 nested levels.');
-  }
-
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  if (typeof value === 'string' || typeof value === 'boolean') {
-    return value;
-  }
-
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value : null;
-  }
-
-  if (value instanceof Date) {
-    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
-  }
-
-  if (Array.isArray(value)) {
-    if (seen.includes(value)) {
-      throw createStorageValidationError('Stored records must not contain circular arrays.');
-    }
-    const nextSeen = seen.concat([value]);
-    return value.map((item) => sanitizeJsonCompatible(item, depth + 1, nextSeen));
-  }
-
-  if (isPlainObject(value)) {
-    if (seen.includes(value)) {
-      throw createStorageValidationError('Stored records must not contain circular objects.');
-    }
-    const nextSeen = seen.concat([value]);
-    const sanitized = {};
-    Object.entries(value).forEach(([key, item]) => {
-      if (!isNonEmptyString(key)) {
-        return;
-      }
-      if (item === undefined || typeof item === 'function' || typeof item === 'symbol') {
-        return;
-      }
-      sanitized[key] = sanitizeJsonCompatible(item, depth + 1, nextSeen);
-    });
-    return sanitized;
-  }
-
-  throw createStorageValidationError('Stored records must be JSON-compatible plain data.');
-}
-
-function normalizeRecord(value, fallback = {}) {
-  if (!isPlainObject(value)) {
-    return { ...fallback };
-  }
-  return sanitizeJsonCompatible(value);
-}
-
-function normalizeNullableRecord(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  return normalizeRecord(value);
-}
-
-function normalizeRecordArray(value) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .filter((item) => isPlainObject(item))
-    .map((item) => sanitizeJsonCompatible(item));
-}
-
-function normalizeIdArray(value) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((item) => normalizeString(item))
-    .filter((item) => item.length > 0);
-}
-
-function normalizeStringArray(value) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return value
-    .map((item) => normalizeString(item))
-    .filter((item) => item.length > 0);
 }
 
 // Phase 2 storage foundation lives below this marker.
@@ -1043,19 +922,7 @@ export {
   createAttemptStore,
   createStorageError,
   createStorageValidationError,
-  isPlainObject,
-  isNonEmptyString,
-  normalizeString,
   normalizeAttemptStatus,
   normalizeIsoDate,
   normalizeNullableIsoDate,
-  normalizePositiveInteger,
-  createStorageId,
-  createQuestionSnapshotId,
-  sanitizeJsonCompatible,
-  normalizeRecord,
-  normalizeNullableRecord,
-  normalizeRecordArray,
-  normalizeIdArray,
-  normalizeStringArray,
 };

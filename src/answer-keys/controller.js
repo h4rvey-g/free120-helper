@@ -1,7 +1,7 @@
 import { STORAGE_KEYS, ATTEMPT_STATUS, WEBFRED_ADAPTER_STATUS, ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAPTURE_SOURCE, ANSWER_KEY_CAPTURE_CONFIG } from '../core/constants.js';
 import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
-import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
+import { isPlainObject, normalizeString } from '../core/data.js';
 import {
   firstNonEmpty,
   buildQuestionIdentity,

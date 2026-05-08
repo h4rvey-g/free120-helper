@@ -1,7 +1,7 @@
 import { SCRIPT, STORAGE_KEYS, DB_SCHEMA, ATTEMPT_STATUS, WEBFRED_ADAPTER_STATUS, WEBFRED_STATE_SOURCE, WEBFRED_ADAPTER_CONFIG, TRACKING_ENGINE_STATUS, TRACKING_ENGINE_CONFIG } from '../core/constants.js';
+import { createStorageId, isPlainObject, normalizeIdArray, normalizePositiveInteger, normalizeRecord, normalizeString, sanitizeJsonCompatible } from '../core/data.js';
 import { createLogger, nowIso } from '../core/logger.js';
 import { createSettingsStore } from '../core/settings.js';
-import { isPlainObject, normalizeString, normalizePositiveInteger, createStorageId, sanitizeJsonCompatible, normalizeRecord, normalizeIdArray } from '../storage/attempt-store.js';
 import {
   safeNowMs,
   firstNonEmpty,

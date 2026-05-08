@@ -1,38 +1,15 @@
 import { SCRIPT } from '../core/constants.js';
 import { nowIso } from '../core/logger.js';
+import {
+  arrayOrEmpty,
+  coerceNonNegativeInteger,
+  coercePositiveInteger,
+  isPlainObject,
+  normalizeString,
+  plainObjectOrEmpty,
+  uniqueNormalizedStrings as uniqueStrings,
+} from '../core/data.js';
 import { buildAttemptScoreSummary, GRADE_STATUS, answersMatch } from '../scoring/grader.js';
-import { isPlainObject, normalizeString } from '../storage/attempt-store.js';
-
-function coerceNonNegativeInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
-function coercePositiveInteger(value, fallback = 1) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function uniqueStrings(values) {
-  const seen = new Set();
-  const result = [];
-  (Array.isArray(values) ? values : []).forEach((value) => {
-    const normalized = normalizeString(value, '');
-    if (normalized && !seen.has(normalized)) {
-      seen.add(normalized);
-      result.push(normalized);
-    }
-  });
-  return result;
-}
-
-function plainObjectOrEmpty(value) {
-  return isPlainObject(value) ? value : {};
-}
-
-function arrayOrEmpty(value) {
-  return Array.isArray(value) ? value : [];
-}
 
 const MAX_REVIEW_ITEMS_PER_BLOCK = 40;
 

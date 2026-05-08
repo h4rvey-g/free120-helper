@@ -1,5 +1,5 @@
+import { coercePositiveInteger, normalizeString } from '../core/data.js';
 import { GRADE_STATUS } from '../scoring/grader.js';
-import { normalizeString } from '../storage/attempt-store.js';
 import { buildReviewModel } from './model.js';
 import { REVIEW_PAGE_CSS } from './page-styles.js';
 import { isQBankCacheAttempt, loadQBankSnapshotsForAttempt } from '../qbank/cache-lookup.js';
@@ -93,11 +93,6 @@ function summarizeAttemptBlocksForDebug(attempt) {
       })];
     }))),
   });
-}
-
-function coercePositiveInteger(value, fallback = 0) {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function getSnapshotBlockNumber(snapshot) {
