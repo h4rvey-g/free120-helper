@@ -1054,6 +1054,95 @@ function normalizeChoicesFromAngular(rawChoices) {
   return valueToArray(rawChoices).map((choice, index) => normalizeChoiceFromAngular(choice, index));
 }
 
+const RAW_ITEM_SELECTED_ANSWER_FIELDS = Object.freeze([
+  'selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'userAnswerId',
+]);
+const RESPONSE_SELECTED_ANSWER_FIELDS = Object.freeze([
+  'selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'userAnswerId', 'optionId', 'choiceId', 'value', 'key', 'id',
+]);
+const NESTED_RESPONSE_FIELDS = Object.freeze(['response', 'answer', 'selectedAnswer', 'selectedResponse', 'itemResponse', 'userAnswer']);
+const CHOICE_COLLECTION_FIELDS = Object.freeze(['choices', 'options', 'answerOptions', 'answerChoices', 'answers']);
+
+function readFirstDirectSemanticString(source, names) {
+  if (!isReadableObject(source)) {
+    return '';
+  }
+  for (const name of names) {
+    const value = readCandidateProperty(source, [name]);
+    const normalized = normalizeString(value, '');
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return '';
+}
+
+function normalizeSelectedAnswerIdFromNestedRecord(source) {
+  if (!isReadableObject(source)) {
+    return normalizeString(source, '');
+  }
+  if (Array.isArray(source)) {
+    return '';
+  }
+  return readFirstDirectSemanticString(source, RESPONSE_SELECTED_ANSWER_FIELDS);
+}
+
+function normalizeSelectedAnswerIdFromNestedResponse(source) {
+  if (!isReadableObject(source)) {
+    return '';
+  }
+  for (const fieldName of NESTED_RESPONSE_FIELDS) {
+    const nested = readCandidateProperty(source, [fieldName]);
+    const answerId = normalizeSelectedAnswerIdFromNestedRecord(nested);
+    if (answerId) {
+      return answerId;
+    }
+  }
+  return '';
+}
+
+function normalizeSelectedAnswerIdFromChoiceCollections(rawItem) {
+  if (!isReadableObject(rawItem)) {
+    return '';
+  }
+  for (const fieldName of CHOICE_COLLECTION_FIELDS) {
+    const choices = valueToArray(readCandidateProperty(rawItem, [fieldName]));
+    for (let index = 0; index < choices.length; index += 1) {
+      const choice = choices[index];
+      if (!isReadableObject(choice)) {
+        continue;
+      }
+      const selected = normalizeMaybeBoolean(readCandidateProperty(choice, ['selected', 'isSelected', 'checked', 'isChecked']));
+      if (selected === true) {
+        return readFirstDirectSemanticString(choice, RESPONSE_SELECTED_ANSWER_FIELDS) || `option-${index + 1}`;
+      }
+    }
+  }
+  return '';
+}
+
+function normalizeSelectedAnswerIdFromAngularItem(rawItem) {
+  if (!isReadableObject(rawItem)) {
+    return '';
+  }
+  return firstNonEmpty([
+    readFirstDirectSemanticString(rawItem, RAW_ITEM_SELECTED_ANSWER_FIELDS),
+    normalizeSelectedAnswerIdFromNestedResponse(rawItem),
+    normalizeSelectedAnswerIdFromChoiceCollections(rawItem),
+  ]);
+}
+
+function normalizeSelectedAnswerIdFromAnswerRecord(record) {
+  if (!isReadableObject(record)) {
+    return normalizeString(record, '');
+  }
+  return firstNonEmpty([
+    readFirstDirectSemanticString(record, RESPONSE_SELECTED_ANSWER_FIELDS),
+    normalizeSelectedAnswerIdFromNestedResponse(record),
+    normalizeSelectedAnswerIdFromChoiceCollections(record),
+  ]);
+}
+
 function normalizeExamIdentityFromAngular(roots, fallbackIdentity) {
   const fallback = fallbackIdentity || {};
   const rawProgram = firstNonEmpty([
@@ -1177,12 +1266,7 @@ function normalizeAngularItem(rawItem, options = {}) {
     blockNumber,
     itemIndex,
   });
-  const selectedAnswerId = firstNonEmpty([
-    findFirstSemanticValue([rawItem], ['selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'userAnswerId', 'value'], { maxDepth: 2 }),
-    isReadableObject(readCandidateProperty(rawItem, ['response', 'answer', 'selectedAnswer']))
-      ? findFirstSemanticValue([readCandidateProperty(rawItem, ['response', 'answer', 'selectedAnswer'])], ['id', 'answerId', 'optionId', 'value'], { maxDepth: 1 })
-      : '',
-  ]);
+  const selectedAnswerId = normalizeSelectedAnswerIdFromAngularItem(rawItem);
   const marked = normalizeMaybeBoolean(findFirstSemanticValue([rawItem], ['marked', 'isMarked', 'flagged', 'isFlagged', 'mark'], { maxDepth: 2 }));
   const answered = normalizeMaybeBoolean(findFirstSemanticValue([rawItem], ['answered', 'isAnswered', 'complete', 'isComplete'], { maxDepth: 2 }));
 
@@ -1393,15 +1477,7 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
       }
       const numericItem = getItemByDenseNumericKey(key, itemList, denseNumericKeyIndexBase) || getItemByDenseNumericKey(key, itemList, sparseNumericKeyIndexBase);
       const mappedQuestionId = itemsByQuestionId.get(key) || itemsByCandidateId.get(key) || (numericItem && numericItem.questionId) || (itemList.length <= 1 ? key : '');
-      if (isReadableObject(value)) {
-        const answerId = firstNonEmpty([
-          findFirstSemanticValue([value], ['selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'value'], { maxDepth: 2 }),
-          findFirstSemanticValue([value], ['id', 'optionId'], { maxDepth: 1 }),
-        ]);
-        addAnswerMapping(answers, mappedQuestionId, answerId);
-      } else {
-        addAnswerMapping(answers, mappedQuestionId, value);
-      }
+      addAnswerMapping(answers, mappedQuestionId, normalizeSelectedAnswerIdFromAnswerRecord(value));
     });
     itemList.forEach((item) => addAnswerMapping(answers, item.questionId, item.selectedAnswerId));
     return Object.freeze(answers);
@@ -1421,12 +1497,7 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
     ]);
     const indexFallbackItem = allowArrayIndexFallback && !rawQuestionId ? itemList[index] : null;
     const mappedQuestionId = itemsByQuestionId.get(rawQuestionId) || itemsByCandidateId.get(rawQuestionId) || (indexFallbackItem && indexFallbackItem.questionId) || (itemList.length <= 1 ? rawQuestionId : '');
-    const answerId = firstNonEmpty([
-      findFirstSemanticValue([entry], ['selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'value'], { maxDepth: 2 }),
-      isReadableObject(readCandidateProperty(entry, ['answer', 'response', 'selectedAnswer']))
-        ? findFirstSemanticValue([readCandidateProperty(entry, ['answer', 'response', 'selectedAnswer'])], ['id', 'answerId', 'optionId', 'value'], { maxDepth: 1 })
-        : '',
-    ]);
+    const answerId = normalizeSelectedAnswerIdFromAnswerRecord(entry);
     addAnswerMapping(answers, mappedQuestionId, answerId);
   });
 

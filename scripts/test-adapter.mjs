@@ -371,6 +371,56 @@ assert.deepEqual(sparseAnswerObjectState.answers, {
   [sparseAnswerObjectState.itemList[2].questionId]: 'C',
 }, 'sparse numeric current-block answer maps map by verified current item index');
 
+const valueOnlyAngularItems = Array.from({ length: 40 }, (_entry, index) => ({
+  questionId: `value-only-q${index + 1}`,
+  componentId: `value-only-component-${index + 1}`,
+  medleyId: 'value-only-medley',
+  itemIndex: index + 1,
+  value: `template-value-${index + 1}`,
+  answered: false,
+}));
+const valueOnlyChoiceRows = el('ol', { class: 'options' }, [
+  el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'value-only-q40', value: 'A' }), el('span', {}, ['Synthetic A'])]),
+  el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'value-only-q40', value: 'B' }), el('span', {}, ['Synthetic B'])]),
+]);
+const valueOnlyNavItems = Array.from({ length: 40 }, (_entry, index) => el(
+  'li',
+  index === 39 ? { class: 'currentitem', 'aria-current': 'true' } : {},
+  [el('span', { class: 'index' }, [String(index + 1)])]
+));
+const valueOnlyBody = el('main', {}, [
+  el('nav', {}, [el('ol', { id: 'leftnav' }, valueOnlyNavItems)]),
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'value-only-medley', 'data-medley-id': 'value-only-medley' }, [
+    el('div', { id: 'value-only-q40', 'data-component-id': 'value-only-component-40', 'data-item-index': '40' }, [
+      el('div', { class: 'NBExposition' }, ['Value-only current stem']),
+      el('div', { id: 'value-only-q40_div', class: 'NBOptionListComp answerbox' }, [valueOnlyChoiceRows]),
+    ]),
+  ])])]),
+  el('div', {}, ['Block 1 of 1']),
+]);
+const valueOnlyDocument = createFakeDocument(valueOnlyBody, { title: 'Synthetic Step 1 Free 120' });
+const valueOnlyWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%201');
+valueOnlyWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          currentBlock: 1,
+          blockCount: 1,
+          itemCount: 40,
+          itemList: valueOnlyAngularItems,
+          currentItem: valueOnlyAngularItems[39],
+        },
+      }),
+    }),
+  }),
+};
+const valueOnlyState = createWebfredSiteAdapter({ window: valueOnlyWindow, document: valueOnlyDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.deepEqual(valueOnlyState.answers, {}, 'Angular item value fields are metadata, not selected answers');
+assert.equal(valueOnlyState.currentItem.selectedAnswerId, '', 'current item without selected response stays unanswered');
+assert.equal(valueOnlyState.itemList.some((entry) => entry.selectedAnswerId), false, 'value-only item list does not mark review items answered');
+
 const adapterState = createSyntheticAdapterState();
 assert.deepEqual(snapshotForAttemptPosition(adapterState), {
   questionId: 'q1',
