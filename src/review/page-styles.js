@@ -65,6 +65,14 @@ const REVIEW_PAGE_CSS = `
   .f120-review-option--selected-wrong { background: rgba(239,68,68,0.12) !important; outline: 2px solid rgba(239,68,68,0.35); outline-offset: 1px; }
   .f120-review-option--selected-unknown { background: rgba(245,158,11,0.14) !important; outline: 2px solid rgba(245,158,11,0.35); outline-offset: 1px; }
   .f120-review-time-spent { margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: #f8fafc; color: #334155; font-weight: 700; }
+  #medley img, #medley video, #medley audio { max-width: 100%; }
+  #medley video, #medley audio { display: block; }
+  #medley .f120-review-media-ready { max-width: 100%; }
+  #medley .f120-review-native-media-fallback { display: grid; gap: 10px; max-width: 720px; margin: 10px 0; }
+  #medley .f120-review-native-media-entry { display: grid; gap: 4px; padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; background: #f8fafc; }
+  #medley .f120-review-native-media-label { font-size: 12px; font-weight: 800; color: #334155; }
+  #medley .f120-review-native-media-entry video, #medley .f120-review-native-media-entry audio { width: 100%; min-height: 36px; }
+  #medley .f120-review-media-inline-duplicate { display: none; }
   .f120-review-side { align-self: start; position: sticky; top: 72px; max-height: calc(100vh - 90px); overflow: auto; }
   .f120-review-detail-panel h2 { margin: 0 0 8px; font-size: 14px; }
   .f120-review-detail-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 8px; font-size: 12px; }

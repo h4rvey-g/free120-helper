@@ -100,6 +100,7 @@ async function main() {
         <section id="item"><article id="content"><div id="medley" data-medley-id="medley-1">
           <div id="item-q1" data-component-id="component-q1" data-item-index="1">
             <div class="NBExposition">Synthetic live-validation stem</div>
+            <div id="media1" class="NBMediaPlayer"><img src="api/Resource?name=synthetic.png" alt="Synthetic media"><video src="api/Resource?name=synthetic.webm"></video></div>
             <div id="q1_div" class="NBOptionListComp answerbox" data-correct-answer="A"><form><ol class="options">
               <li class="stContext correct"><input class="NBOptionInput" type="radio" name="q1" value="A" checked><span>A. Synthetic choice A</span></li>
               <li class="stContext"><input class="NBOptionInput" type="radio" name="q1" value="B"><span>B. Synthetic choice B</span></li>
@@ -110,7 +111,16 @@ async function main() {
         <div>Block 1 of 1</div>
       </main>
     </body></html>\`;
-    await page.route('https://orientation.nbme.org/webfred/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: html }));
+    await page.route('https://orientation.nbme.org/webfred/**', route => {
+      const url = route.request().url();
+      if (url.includes('name=synthetic.png')) {
+        return route.fulfill({ status: 200, contentType: 'image/png', body: '' });
+      }
+      if (url.includes('name=synthetic.webm')) {
+        return route.fulfill({ status: 200, contentType: 'video/webm', body: '' });
+      }
+      return route.fulfill({ status: 200, contentType: 'text/html', body: html });
+    });
     await page.goto('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%201&block=1&mode=test', { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.addScriptTag({ path: 'dist/free120-helper.user.js' });
     await page.waitForFunction(() => Boolean(window.Free120Helper && document.querySelector('#f120-active-exam-pill')), null, { timeout: 15000 });
@@ -157,11 +167,17 @@ async function main() {
           const readReview = () => {
             const doc = frame.contentDocument;
             const selectedInput = doc && doc.querySelector('ol.options input:checked');
+            const image = doc && doc.querySelector('#medley img');
+            const video = doc && doc.querySelector('#medley video');
             return {
               navItems: doc ? doc.querySelectorAll('ol#leftnav li').length : 0,
               stemVisible: Boolean(doc && doc.body && doc.body.innerText.includes('Synthetic live-validation stem')),
               selectedValue: selectedInput ? selectedInput.getAttribute('value') : '',
               unavailable: Boolean(doc && doc.body && doc.body.innerText.includes('Stored rendered item snapshot unavailable')),
+              resourceBase: doc ? doc.baseURI : '',
+              imageResolved: Boolean(image && image.currentSrc === 'https://orientation.nbme.org/webfred/api/Resource?name=synthetic.png'),
+              videoResolved: Boolean(video && video.currentSrc === 'https://orientation.nbme.org/webfred/api/Resource?name=synthetic.webm'),
+              videoControls: Boolean(video && video.controls),
             };
           };
           frame.onload = () => {
@@ -241,6 +257,10 @@ async function main() {
   assert(webfredValidation.reviewResult.stemVisible, 'review mode question stem missing');
   assert(webfredValidation.reviewResult.selectedValue === 'A', 'review mode selected option missing');
   assert(webfredValidation.reviewResult.unavailable === false, 'review mode fell back to unavailable item');
+  assert(webfredValidation.reviewResult.resourceBase === 'https://orientation.nbme.org/webfred/', 'review mode media base missing');
+  assert(webfredValidation.reviewResult.imageResolved, 'review mode image resource not resolved');
+  assert(webfredValidation.reviewResult.videoResolved, 'review mode video resource not resolved');
+  assert(webfredValidation.reviewResult.videoControls, 'review mode media player controls missing');
   assert(webfredValidation.keyStatus === 'complete', 'synthetic answer key capture incomplete');
   assert(webfredValidation.keyKnown >= 1, 'synthetic key count mismatch');
   assert(webfredValidation.exportSnapshots === 0 && webfredValidation.exportContentFree, 'history-only export leaked question content');

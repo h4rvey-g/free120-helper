@@ -18,6 +18,7 @@ import {
 } from '../webfred/adapter.js';
 import { buildAttemptCompletionPatch, inferNativeCompletionState } from '../scoring/grader.js';
 import { loadQBankCaptureContext, resolveQBankCaptureForItems } from '../qbank/cache-lookup.js';
+import { extractMediaResourceUrlsForHtml, extractResourceUrlsFromHtml, fetchResourceDataByUrl, normalizeResourceUrl } from '../media/resource-cache.js';
 
 function createTrackingEngineError(message, details) {
   const error = new Error(message);
@@ -869,11 +870,11 @@ function getSnapshotContentSource(qbankSnapshot, root, stateContent) {
   if (qbankSnapshot && normalizeString(qbankSnapshot.renderedHtml || qbankSnapshot.promptHtml, '')) {
     return 'qbank-cache';
   }
-  if (root && normalizeString(root.innerHTML, '')) {
-    return 'dom-current-item';
-  }
   if (stateContent && normalizeString(stateContent.renderedHtml || stateContent.promptHtml || stateContent.answerBoxHtml, '')) {
     return 'adapter-current-content';
+  }
+  if (root && normalizeString(root.innerHTML, '')) {
+    return 'dom-current-item';
   }
   return 'unavailable';
 }
@@ -953,8 +954,8 @@ function createTrackingQuestionSnapshot(candidate) {
   const contentSource = getSnapshotContentSource(qbankSnapshot, root, stateContent);
   const renderedHtml = firstNonEmpty([
     qbankSnapshot && qbankSnapshot.renderedHtml,
-    root && root.outerHTML,
     buildRenderedHtmlFromCurrentContent(stateContent),
+    root && root.outerHTML,
   ]);
   const promptHtml = firstNonEmpty([
     qbankSnapshot && qbankSnapshot.promptHtml,
@@ -963,7 +964,13 @@ function createTrackingQuestionSnapshot(candidate) {
   const resourceUrls = uniqueNormalizedStrings([
     ...(Array.isArray(qbankSnapshot && qbankSnapshot.resourceUrls) ? qbankSnapshot.resourceUrls : []),
     ...(Array.isArray(stateContent && stateContent.resourceUrls) ? stateContent.resourceUrls : []),
+    ...extractResourceUrlsFromHtml(renderedHtml),
+    ...extractResourceUrlsFromHtml(root && root.outerHTML),
   ]);
+  const resourceDataByUrl = Object.freeze({
+    ...((qbankSnapshot && qbankSnapshot.resourceDataByUrl && typeof qbankSnapshot.resourceDataByUrl === 'object') ? qbankSnapshot.resourceDataByUrl : {}),
+    ...((candidate.resourceDataByUrl && typeof candidate.resourceDataByUrl === 'object') ? candidate.resourceDataByUrl : {}),
+  });
   const timingRecord = candidate.timingByQuestionId && candidate.timingByQuestionId[questionId] ? candidate.timingByQuestionId[questionId] : null;
   const contentHash = stableHashString([
     questionId,
@@ -1003,6 +1010,7 @@ function createTrackingQuestionSnapshot(candidate) {
     annotations,
     timingMs: timingRecord ? coercePositiveInteger(timingRecord.totalMs || timingRecord.timingMs, 0) : 0,
     resourceUrls,
+    resourceDataByUrl,
     contentHash,
     snapshot: Object.freeze({
       webfredShell: createTrackingWebfredShellSnapshot(candidate),
@@ -1250,7 +1258,7 @@ async function persistTrackingState(options) {
   let effectiveCurrentItem = currentItem;
   const domAnswerAuthoritative = Boolean(root && domChoices.length);
   if (root) {
-    const domIdentity = extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow);
+    const domIdentity = extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow, { currentBlock: effectiveAdapterState.currentBlock || adapterState.currentBlock });
     const rootQuestionId = normalizeString(domIdentity && domIdentity.questionId, '');
     const selectedFromDom = firstNonEmpty([(domChoices.find((choice) => choice && choice.selected) || {}).id, root ? extractSelectedAnswerIdFromDom(root) : '']);
     const effectiveCurrentQuestionId = normalizeString(effectiveCurrentItem && effectiveCurrentItem.questionId, '');
@@ -1334,7 +1342,7 @@ async function persistTrackingState(options) {
 
   const questionId = effectiveCurrentItem.questionId;
   if (root || effectiveAdapterState.currentContent) {
-    const snapshot = createTrackingQuestionSnapshot({
+    let snapshot = createTrackingQuestionSnapshot({
       attemptId: attempt.id,
       attempt: { ...attempt, ...patch },
       adapterState: effectiveAdapterState,
@@ -1346,6 +1354,28 @@ async function persistTrackingState(options) {
       qbankCaptureResult,
     });
     try {
+      const existingSnapshot = typeof storage.getQuestionSnapshot === 'function'
+        ? await storage.getQuestionSnapshot(attempt.id, snapshot.questionId)
+        : null;
+      const existingResourceData = isPlainObject(existingSnapshot && existingSnapshot.resourceDataByUrl) ? existingSnapshot.resourceDataByUrl : {};
+      const snapshotResourceData = isPlainObject(snapshot && snapshot.resourceDataByUrl) ? snapshot.resourceDataByUrl : {};
+      const baseUrl = normalizeString(adapterWindow && adapterWindow.location && adapterWindow.location.href, `${SCRIPT.ORIGIN}/webfred/`);
+      const mediaMetadataResourceUrls = await extractMediaResourceUrlsForHtml(adapterWindow, snapshot.renderedHtml);
+      if (mediaMetadataResourceUrls.length) {
+        snapshot = Object.freeze({
+          ...snapshot,
+          resourceUrls: uniqueNormalizedStrings([...(snapshot.resourceUrls || []), ...mediaMetadataResourceUrls]),
+        });
+      }
+      const missingResourceUrls = uniqueNormalizedStrings(snapshot.resourceUrls || []).filter((url) => {
+        const absoluteUrl = normalizeResourceUrl(url, baseUrl);
+        return !existingResourceData[url] && !existingResourceData[absoluteUrl] && !snapshotResourceData[url] && !snapshotResourceData[absoluteUrl];
+      });
+      const fetchedResourceData = missingResourceUrls.length ? await fetchResourceDataByUrl(adapterWindow, missingResourceUrls, { baseUrl }) : {};
+      const resourceDataByUrl = Object.freeze({ ...existingResourceData, ...snapshotResourceData, ...fetchedResourceData });
+      if (Object.keys(resourceDataByUrl).length) {
+        snapshot = Object.freeze({ ...snapshot, resourceDataByUrl });
+      }
       await storage.saveQuestionSnapshot(snapshot);
       patch.notesByQuestionId[questionId] = snapshot.notes || '';
       patch.annotationsByQuestionId[questionId] = snapshot.annotations || {};

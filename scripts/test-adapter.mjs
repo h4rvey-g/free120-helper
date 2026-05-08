@@ -46,6 +46,8 @@ const item = el('div', { id: 'item-q1', 'data-component-id': 'component-q1', 'da
   el('mark', {}, ['Synthetic highlight']),
   el('span', { style: 'text-decoration: line-through' }, ['Synthetic strikeout']),
   el('img', { src: 'https://example.test/synthetic.png' }),
+  el('video', { 'data-src': 'api/Resource?name=synthetic.webm' }),
+  el('div', { style: 'background-image: url(api/Resource?name=background.gif)' }, []),
 ]);
 const medley = el('div', { id: 'medley-1', 'data-medley-id': 'medley-1' }, [item]);
 const nav = el('nav', {}, [el('ol', { id: 'leftnav' }, [
@@ -80,12 +82,51 @@ assert.equal(choices.length, 2);
 assert.equal(choices[0].id, 'A');
 assert.equal(choices[0].selected, true);
 assert.equal(extractSelectedAnswerIdFromDom(item), 'A');
-assert.deepEqual(extractResourceUrls(item), ['https://example.test/synthetic.png']);
+assert.deepEqual(extractResourceUrls(item), ['https://example.test/synthetic.png', 'api/Resource?name=synthetic.webm', 'api/Resource?name=background.gif']);
 
 const content = extractCurrentContentFromDom(item);
 assert.match(content.renderedHtml, /NBExposition/);
 assert.match(content.answerBoxHtml, /Synthetic A/);
 assert.equal(content.choices.length, 2);
+assert.match(content.renderedHtml, /synthetic\.webm/, 'DOM content snapshot keeps media resources');
+
+const mediaSiblingItem = el('div', { id: 'item-media-sibling', 'data-component-id': 'component-media', 'data-item-index': '1' }, [
+  el('div', { class: 'NBExposition' }, ['Media sibling stem']),
+  el('div', { id: 'media_div', class: 'NBOptionListComp answerbox' }, [choiceRows]),
+]);
+const mediaSiblingPage = el('div', { id: 'page1' }, [
+  mediaSiblingItem,
+  el('div', { id: 'media1' }, [el('div', { class: 'NBMediaPlayer' }, [el('div', { class: 'media-player', 'data-media-id': '097247' }, []), el('video', { src: 'api/Resource?name=sibling.webm' })])]),
+]);
+const mediaSiblingContent = extractCurrentContentFromDom(mediaSiblingItem);
+assert.match(mediaSiblingContent.renderedHtml, /NBMediaPlayer/, 'DOM content snapshot expands to sibling WebFRED media player');
+assert.deepEqual(mediaSiblingContent.resourceUrls, ['api/Resource?name=sibling.webm']);
+const mediaSiblingDocument = createFakeDocument(el('main', {}, [
+  el('nav', {}, [el('ol', { id: 'leftnav' }, [el('li', { class: 'currentitem', 'aria-current': 'true' }, [el('span', { class: 'index' }, ['40'])])])]),
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'medley' }, [mediaSiblingPage])])]),
+  el('div', {}, ['Block 3 of 3']),
+]), { title: 'NBME Exam Driver' });
+const mediaSiblingWindow = createFakeWindow('https://orientation.nbme.org/webfred/#!/main');
+mediaSiblingWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          exam: {
+            config: { programName: 'USMLE' },
+            blockInfo: { currentBlock: 0, blockCount: 1, blockMap: [{ name: 'STPF1C0139D1A1', numberOfItems: 40, caption: 'Exam Section' }] },
+            items: Array.from({ length: 40 }, (_entry, index) => ({ componentId: `ANG${index + 1}`, medleyId: `AMED${index + 1}` })),
+            currItem: { componentId: 'ANG1', medleyId: 'AMED1' },
+          },
+        },
+      }),
+    }),
+  }),
+};
+const mediaSiblingState = createWebfredSiteAdapter({ window: mediaSiblingWindow, document: mediaSiblingDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.equal(mediaSiblingState.currentContent.resourceUrls[0], 'api/Resource?name=sibling.webm');
+assert.equal(mediaSiblingState.currentItem.componentId, 'component-media', 'merged state prefers DOM identity when DOM content carries associated media');
 
 const navState = extractNavigationStateFromDom(fakeDocument, fakeWindow);
 assert.equal(navState.currentBlock, 1);
@@ -103,6 +144,47 @@ assert.equal(genericDriverState.launchedScope.section, 'Step 1 Block 2');
 assert.equal(genericDriverState.currentBlock, 2, 'hash/query launched block overrides missing DOM block text');
 assert.equal(genericDriverState.currentItem.blockNumber, 2);
 assert.match(genericDriverState.currentItem.questionId, /Block-2/);
+
+const blockCodeItems = Array.from({ length: 40 }, (_entry, index) => ({
+  componentId: `block-code-component-${index + 1}`,
+  medleyId: `block-code-medley-${index + 1}`,
+}));
+const blockCodeNav = el('nav', {}, [el('ol', { id: 'leftnav' }, Array.from({ length: 40 }, (_entry, index) => (
+  el('li', index === 0 ? { class: 'currentitem', 'aria-current': 'true' } : {}, [el('span', { class: 'index' }, [String(index + 1)])])
+)))]);
+const blockCodeBody = el('main', {}, [
+  blockCodeNav,
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'medley' }, [
+    el('div', { id: 'item1' }, [
+      el('div', { class: 'NBExposition' }, ['Block-code stem']),
+      el('div', { id: 'block-code-component-1_div', class: 'NBOptionListComp answerbox' }, [choiceRows]),
+    ]),
+  ])])]),
+]);
+const blockCodeDocument = createFakeDocument(blockCodeBody, { title: 'NBME Exam Driver' });
+const blockCodeWindow = createFakeWindow('https://orientation.nbme.org/webfred/#!/main');
+blockCodeWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          exam: {
+            config: { programName: 'USMLE' },
+            blockInfo: { currentBlock: 0, blockCount: 1, blockMap: [{ name: 'STPF1C0139D1A1', numberOfItems: 40, caption: 'Exam Section' }] },
+            items: blockCodeItems,
+            currItem: blockCodeItems[0],
+          },
+        },
+      }),
+    }),
+  }),
+};
+const blockCodeState = createWebfredSiteAdapter({ window: blockCodeWindow, document: blockCodeDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.equal(blockCodeState.currentBlock, 3, 'single-block WebFRED infers launched Step 1 Block 3 from test definition code');
+assert.equal(blockCodeState.blockMetadata[0].blockNumber, 3);
+assert.equal(blockCodeState.currentItem.blockNumber, 3);
+assert.match(blockCodeState.currentItem.questionId, /Block-3/);
 
 const staleScopeAngularItems = Array.from({ length: 200 }, (_entry, index) => ({
   componentId: `scope-component-${index + 1}`,
@@ -444,6 +526,7 @@ const qbankKeyResult = Object.freeze({
       promptHtml: '<div class="NBExposition">Synthetic stem</div>',
       choices,
       resourceUrls: Object.freeze(['https://example.test/synthetic.png']),
+      resourceDataByUrl: Object.freeze({ 'api/Resource?name=synthetic.webm': 'data:video/webm;base64,AAAA' }),
       metadata: Object.freeze({ qbankCacheAttemptId: 'qbank-cache:synthetic', qbankCacheOriginalQuestionId: 'qbank-q1', qbankCacheMatchSource: 'component-medley' }),
       snapshot: Object.freeze({ qbankCache: Object.freeze({ sessionId: 'synthetic-session' }) }),
     }),
@@ -595,7 +678,8 @@ assert.equal(trackingSnapshot.notes, 'Synthetic note');
 assert.equal(trackingSnapshot.annotations.highlights.length, 1);
 assert.equal(trackingSnapshot.annotations.strikeouts.length, 1);
 assert.equal(trackingSnapshot.timingMs, 1234);
-assert.deepEqual(trackingSnapshot.resourceUrls, ['https://example.test/synthetic.png']);
+assert.deepEqual(trackingSnapshot.resourceUrls, ['https://example.test/synthetic.png', 'api/Resource?name=synthetic.webm', 'api/Resource?name=background.gif']);
+assert.equal(trackingSnapshot.resourceDataByUrl['api/Resource?name=synthetic.webm'], 'data:video/webm;base64,AAAA');
 
 const liveFallbackTrackingSnapshot = createTrackingQuestionSnapshot({
   attemptId: attempt.id,
@@ -611,7 +695,7 @@ const liveFallbackTrackingSnapshot = createTrackingQuestionSnapshot({
 assert.match(liveFallbackTrackingSnapshot.renderedHtml, /Synthetic stem/, 'live DOM snapshot keeps question content when qbank cache is unavailable');
 assert.equal(liveFallbackTrackingSnapshot.choices.length, 3, 'live snapshot choices keep review option rows without qbank cache');
 assert.equal(liveFallbackTrackingSnapshot.selectedAnswerId, 'A', 'live snapshot records selected answer without qbank cache');
-assert.equal(liveFallbackTrackingSnapshot.metadata.questionContentSource, 'dom-current-item');
+assert.equal(liveFallbackTrackingSnapshot.metadata.questionContentSource, 'adapter-current-content');
 
 const staleQ5Id = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', examSection: 'Block 1', medleyId: 'medley-1', componentId: 'component-q5', blockNumber: 1, itemIndex: 5 }).questionId;
 const staleQ6Id = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', examSection: 'Block 1', medleyId: 'medley-1', componentId: 'component-q6', blockNumber: 1, itemIndex: 6 }).questionId;

@@ -1,8 +1,9 @@
 import { SCRIPT, ATTEMPT_STATUS, ANSWER_KEY_CAPTURE_STATUS } from '../core/constants.js';
 import { nowIso } from '../core/logger.js';
 import { buildAttemptScoreSummary } from '../scoring/grader.js';
-import { createQuestionSnapshotId, normalizeString } from '../core/data.js';
+import { createQuestionSnapshotId, normalizeString, uniqueNormalizedStrings } from '../core/data.js';
 import { buildQuestionIdentity, extractChoicesFromDom, extractResourceUrls } from '../webfred/adapter.js';
+import { extractMediaResourceUrlsForHtml, extractResourceUrlsFromHtml, fetchResourceDataByUrl } from '../media/resource-cache.js';
 
 const QBANK_CACHE_ATTEMPT_PREFIX = 'qbank-cache';
 const QBANK_CAPTURE_STATUS = Object.freeze({
@@ -191,21 +192,21 @@ function normalizeQBankChoices(root) {
   })).filter((choice) => choice.id);
 }
 
-function buildQBankSnapshotsFromSessionData(adapterWindow, adapterDocument, definition, statusResult, bulkContent, sessionId) {
+async function buildQBankSnapshotsFromSessionData(adapterWindow, adapterDocument, definition, statusResult, bulkContent, sessionId) {
   const status = statusResult && statusResult.result ? statusResult.result : statusResult;
   const medleys = status && status.examBlock && Array.isArray(status.examBlock.medleys) ? status.examBlock.medleys : [];
   const snapshots = [];
   const correctAnswers = {};
   const itemMetadataByQuestionId = {};
   let answerableIndex = 0;
-  medleys.forEach((medley) => {
+  for (const medley of medleys) {
     const medleyId = normalizeString(medley && medley.medleyId, '');
     const html = normalizeString(bulkContent && bulkContent[medleyId], '');
     const fragment = parseHtml(adapterDocument, html);
-    (Array.isArray(medley && medley.items) ? medley.items : []).forEach((item) => {
+    for (const item of (Array.isArray(medley && medley.items) ? medley.items : [])) {
       const componentId = normalizeString(item && item.componentId, '');
       if (!componentId || item && item.answerable === false) {
-        return;
+        continue;
       }
       answerableIndex += 1;
       const itemRoot = findItemRoot(adapterWindow, fragment, componentId) || fragment;
@@ -223,6 +224,12 @@ function buildQBankSnapshotsFromSessionData(adapterWindow, adapterDocument, defi
       const questionId = identity.questionId || `${definition.examName}:${medleyId}:${componentId}`;
       const renderedHtml = normalizeString(itemRoot && itemRoot.outerHTML, html);
       const promptElement = itemRoot && itemRoot.querySelector ? itemRoot.querySelector('.NBExposition, [class*="Exposition"]') : null;
+      const resourceUrls = uniqueNormalizedStrings([
+        ...extractResourceUrls(itemRoot),
+        ...extractResourceUrlsFromHtml(renderedHtml),
+        ...await extractMediaResourceUrlsForHtml(adapterWindow, renderedHtml),
+      ]);
+      const resourceDataByUrl = await fetchResourceDataByUrl(adapterWindow, resourceUrls, { baseUrl: `${SCRIPT.ORIGIN}/webfred/`, cache: 'no-store', sessionId });
       if (correctAnswerId) {
         correctAnswers[questionId] = correctAnswerId;
       }
@@ -249,12 +256,13 @@ function buildQBankSnapshotsFromSessionData(adapterWindow, adapterDocument, defi
         notes: '',
         annotations: Object.freeze({}),
         timingMs: 0,
-        resourceUrls: extractResourceUrls(itemRoot),
-        contentHash: stableHashString(`${questionId}\n${renderedHtml}\n${choices.map((choice) => `${choice.id}:${choice.label}`).join('|')}`),
+        resourceUrls,
+        resourceDataByUrl,
+        contentHash: stableHashString(`${questionId}\n${renderedHtml}\n${choices.map((choice) => `${choice.id}:${choice.label}`).join('|')}\n${resourceUrls.join('|')}`),
         snapshot: Object.freeze({ qbankCache: Object.freeze({ definition, sessionId, capturedAt: nowIso() }) }),
       }));
-    });
-  });
+    }
+  }
   return Object.freeze({ snapshots: Object.freeze(snapshots), correctAnswers: Object.freeze(correctAnswers), itemMetadataByQuestionId: Object.freeze(itemMetadataByQuestionId) });
 }
 
@@ -301,7 +309,7 @@ function createQBankCacheController(options = {}) {
     const session = await createExamSession(adapterWindow, launchContext, definition);
     const statusResult = await postJson(adapterWindow, '/webfred/api/services/WebFred/examStatus/GetExamStatus', { sessionId: session.sessionId });
     const bulkContent = await postJson(adapterWindow, '/webfred/api/Content/GetBulk', { sessionId: session.sessionId, program: definition.program, exam: definition.examName });
-    const captureData = buildQBankSnapshotsFromSessionData(adapterWindow, adapterDocument, definition, statusResult, bulkContent, session.sessionId);
+    const captureData = await buildQBankSnapshotsFromSessionData(adapterWindow, adapterDocument, definition, statusResult, bulkContent, session.sessionId);
     if (!captureData.snapshots.length) {
       throw new Error(`No answerable items found in ${definition.testDefinitionDisplayName}.`);
     }

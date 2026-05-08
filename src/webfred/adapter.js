@@ -367,13 +367,31 @@ function findCurrentDomItemRoot(adapterDocument, adapterWindow) {
   return null;
 }
 
+function extractCssUrlValues(value) {
+  const text = normalizeString(value, '');
+  const urls = [];
+  text.replace(/url\((['"]?)([^'")]+)\1\)/gi, (_match, _quote, url) => {
+    urls.push(url);
+    return _match;
+  });
+  return urls;
+}
+
 function extractResourceUrls(root) {
   if (!root || typeof root.querySelectorAll !== 'function') {
     return [];
   }
   const urls = [];
-  root.querySelectorAll('img[src], source[src], audio[src], video[src], a[href]').forEach((element) => {
-    urls.push(safeAttribute(element, 'src') || safeAttribute(element, 'href'));
+  root.querySelectorAll('img, source, audio, video, track, a[href], [style*="url("]').forEach((element) => {
+    urls.push(
+      safeAttribute(element, 'src')
+        || safeAttribute(element, 'data-ng-src')
+        || safeAttribute(element, 'ng-src')
+        || safeAttribute(element, 'data-src')
+        || safeAttribute(element, 'poster')
+        || safeAttribute(element, 'href')
+    );
+    urls.push(...extractCssUrlValues(safeAttribute(element, 'style')));
   });
   return uniqueNormalizedStrings(urls);
 }
@@ -427,6 +445,13 @@ function extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow, op
   const medleyElement = root && typeof root.closest === 'function'
     ? root.closest('#medley, [id*="medley"], [data-medley-id]')
     : null;
+  const answerBox = root && typeof root.querySelector === 'function'
+    ? root.querySelector('div[id$="_div"].NBOptionListComp.answerbox, .NBOptionListComp.answerbox, .answerbox, input.NBOptionInput[name], ol.options input[name]')
+    : null;
+  const answerBoxId = safeAttribute(answerBox, 'id');
+  const answerBoxComponentId = answerBoxId && answerBoxId.endsWith('_div') ? answerBoxId.slice(0, -4) : safeAttribute(answerBox, 'name');
+  const rawMedleyId = safeDatasetValue(medleyElement, 'medleyId') || safeAttribute(medleyElement, 'data-medley-id') || safeAttribute(medleyElement, 'id');
+  const medleyId = /^medley$/i.test(rawMedleyId) ? '' : rawMedleyId;
   const examIdentity = extractExamIdentityFromDom(adapterDocument, adapterWindow);
   const navState = extractNavigationStateFromDom(adapterDocument, adapterWindow);
   const itemIndex = coercePositiveInteger(
@@ -441,26 +466,39 @@ function extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow, op
     examProgram: examIdentity.program,
     examName: examIdentity.examName,
     examSection: examIdentity.section,
-    medleyId: safeDatasetValue(medleyElement, 'medleyId') || safeAttribute(medleyElement, 'id'),
-    componentId: safeDatasetValue(root, 'componentId') || safeDatasetValue(root, 'component') || safeAttribute(root, 'id'),
-    itemId: safeDatasetValue(root, 'itemId') || safeAttribute(root, 'data-item-id'),
+    medleyId,
+    componentId: safeDatasetValue(root, 'componentId') || safeDatasetValue(root, 'component') || answerBoxComponentId || safeAttribute(root, 'id'),
+    itemId: safeDatasetValue(root, 'itemId') || safeAttribute(root, 'data-item-id') || answerBoxComponentId || safeAttribute(root, 'id'),
     blockNumber,
     itemIndex,
   });
+}
+
+function expandContentRootForAssociatedMedia(root) {
+  if (!root || typeof root.closest !== 'function') {
+    return root;
+  }
+  const pageRoot = root.closest('div[id^="page"], .NBSinglePage');
+  if (!pageRoot || !pageRoot.querySelector || pageRoot === root) {
+    return root;
+  }
+  const hasAssociatedMedia = Boolean(pageRoot.querySelector('.NBMediaPlayer, .media-player, video, audio, img[src], source[src], [style*="url("]'));
+  return hasAssociatedMedia ? pageRoot : root;
 }
 
 function extractCurrentContentFromDom(root) {
   if (!root) {
     return null;
   }
+  const contentRoot = expandContentRootForAssociatedMedia(root);
   const promptElement = root.querySelector('div.NBExposition, .NBExposition, [class*="Exposition"]');
   const answerBox = root.querySelector('div[id$="_div"].NBOptionListComp.answerbox, .NBOptionListComp.answerbox, .answerbox');
   return Object.freeze({
-    renderedHtml: root.innerHTML || '',
+    renderedHtml: contentRoot && contentRoot.outerHTML ? contentRoot.outerHTML : (contentRoot && contentRoot.innerHTML || ''),
     promptHtml: promptElement ? promptElement.innerHTML || '' : '',
     answerBoxHtml: answerBox ? answerBox.innerHTML || '' : '',
     choices: extractChoicesFromDom(root),
-    resourceUrls: extractResourceUrls(root),
+    resourceUrls: extractResourceUrls(contentRoot || root),
   });
 }
 
@@ -1143,6 +1181,61 @@ function normalizeSelectedAnswerIdFromAnswerRecord(record) {
   ]);
 }
 
+function parseBlockNumberFromTestDefinitionCode(value) {
+  const match = normalizeString(value, '').match(/\bSTPF\s*(1|2|3)\s*C0*(\d+)/i);
+  if (!match) {
+    return 0;
+  }
+  const step = match[1];
+  const code = Number(match[2]);
+  if (!Number.isInteger(code)) {
+    return 0;
+  }
+  if (step === '1' && code >= 137 && code <= 139) {
+    return code - 136;
+  }
+  if (step === '2' && code >= 152 && code <= 154) {
+    return code - 151;
+  }
+  if (step === '3' && code >= 328 && code <= 331) {
+    return code - 327;
+  }
+  return 0;
+}
+
+function getStepLabelFromTestDefinitionCode(value) {
+  const match = normalizeString(value, '').match(/\bSTPF\s*(1|2|3)\s*C0*\d+/i);
+  if (!match) {
+    return '';
+  }
+  return match[1] === '2' ? 'Step 2 CK' : `Step ${match[1]}`;
+}
+
+function isKeyLikeDisplayName(value) {
+  return /^(?:key|answer\s*key|answers?)$/i.test(normalizeString(value, ''));
+}
+
+function inferSingleBlockDefinitionFromBlockMap(rawBlockMap) {
+  const entries = valueToArray(rawBlockMap).filter(isReadableObject);
+  if (entries.length !== 1) {
+    return Object.freeze({ blockNumber: 0, testDefinitionName: '', testDefinitionDisplayName: '' });
+  }
+  const entry = entries[0];
+  const testDefinitionName = firstNonEmpty([
+    readCandidateProperty(entry, ['testDefinitionName', 'testDefinition', 'name', 'id']),
+  ]);
+  const rawDisplayName = firstNonEmpty([
+    readCandidateProperty(entry, ['testDefinitionDisplayName', 'displayName', 'blockName', 'sectionName', 'title', 'label', 'caption']),
+  ]);
+  const text = [testDefinitionName, rawDisplayName].join(' ');
+  const blockNumber = coercePositiveInteger(extractBlockNumberFromText(text), parseBlockNumberFromTestDefinitionCode(text));
+  const stepLabel = getStepLabelFromTestDefinitionCode(text);
+  const displayName = !isKeyLikeDisplayName(rawDisplayName) && extractBlockNumberFromText(rawDisplayName)
+    ? rawDisplayName
+    : (blockNumber ? `${stepLabel || 'Block'}${stepLabel ? ' Block ' : ' '}${blockNumber}` : '');
+  return Object.freeze({ blockNumber, testDefinitionName, testDefinitionDisplayName: displayName });
+}
+
 function normalizeExamIdentityFromAngular(roots, fallbackIdentity) {
   const fallback = fallbackIdentity || {};
   const rawProgram = firstNonEmpty([
@@ -1182,9 +1275,15 @@ function normalizeLaunchedScopeFromAngular(roots, fallbackScope) {
   ], { maxDepth: 2 });
   const scope = isPlainObject(rawScope) ? safeJsonCompatibleValue(rawScope) : {};
   const fallback = isPlainObject(fallbackScope) ? fallbackScope : {};
+  const blockMapDefinition = inferSingleBlockDefinitionFromBlockMap(findFirstSemanticValue(roots, ['blockMap'], { maxDepth: 4 }));
+  const rawScopeDisplayName = isReadableObject(rawScope) && readCandidateProperty(rawScope, ['testDefinitionDisplayName', 'displayName', 'blockName', 'sectionName', 'name']);
+  const semanticDisplayName = findFirstSemanticValue(roots, ['testDefinitionDisplayName', 'blockName', 'sectionName', 'displayName'], { maxDepth: 3 });
   const rawDisplayName = firstNonEmpty([
-    isReadableObject(rawScope) && readCandidateProperty(rawScope, ['testDefinitionDisplayName', 'displayName', 'blockName', 'sectionName', 'name']),
-    findFirstSemanticValue(roots, ['testDefinitionDisplayName', 'blockName', 'sectionName', 'displayName'], { maxDepth: 3 }),
+    !isKeyLikeDisplayName(rawScopeDisplayName) ? rawScopeDisplayName : '',
+    !isKeyLikeDisplayName(semanticDisplayName) ? semanticDisplayName : '',
+    blockMapDefinition.testDefinitionDisplayName,
+    rawScopeDisplayName,
+    semanticDisplayName,
     fallback.testDefinitionDisplayName,
     fallback.displayName,
     fallback.section,
@@ -1192,11 +1291,13 @@ function normalizeLaunchedScopeFromAngular(roots, fallbackScope) {
   const rawTestDefinitionName = firstNonEmpty([
     isReadableObject(rawScope) && readCandidateProperty(rawScope, ['testDefinitionName', 'testDefinition']),
     findFirstSemanticValue(roots, ['testDefinitionName', 'testDefinition'], { maxDepth: 3 }),
+    blockMapDefinition.testDefinitionName,
     fallback.testDefinitionName,
   ]);
   const explicitBlock = firstNonEmpty([
     isReadableObject(rawScope) && readCandidateProperty(rawScope, ['block', 'blockNumber', 'selectedBlock', 'launchedBlock']),
     findFirstSemanticValue(roots, ['selectedBlock', 'launchedBlock', 'blockNumber'], { maxDepth: 2 }),
+    blockMapDefinition.blockNumber,
     fallback.block,
   ]);
   const blockFromText = extractBlockNumberFromText([rawDisplayName, rawTestDefinitionName, fallback.section].join(' '));
@@ -1854,6 +1955,37 @@ function extractAngularState(adapterWindow, adapterDocument, angularServices, do
   });
 }
 
+function contentHasMediaEvidence(content) {
+  if (!content) {
+    return false;
+  }
+  const renderedHtml = normalizeString(content.renderedHtml || content.promptHtml || content.answerBoxHtml, '');
+  const resourceCount = Array.isArray(content.resourceUrls) ? content.resourceUrls.length : 0;
+  return Boolean(resourceCount || /NBMediaPlayer|media-player|<video\b|<audio\b|<img\b|api\/Resource/i.test(renderedHtml));
+}
+
+function scoreCurrentContentForReview(content) {
+  if (!content) {
+    return 0;
+  }
+  const renderedHtml = normalizeString(content.renderedHtml || content.promptHtml || content.answerBoxHtml, '');
+  const resourceCount = Array.isArray(content.resourceUrls) ? content.resourceUrls.length : 0;
+  const mediaBonus = contentHasMediaEvidence(content) ? 100000 : 0;
+  return mediaBonus + (resourceCount * 1000) + renderedHtml.length;
+}
+
+function chooseCurrentContent(primaryContent, fallbackContent) {
+  if (!primaryContent) {
+    return fallbackContent || null;
+  }
+  if (!fallbackContent) {
+    return primaryContent;
+  }
+  return scoreCurrentContentForReview(fallbackContent) > scoreCurrentContentForReview(primaryContent)
+    ? fallbackContent
+    : primaryContent;
+}
+
 function mergeWebfredCapabilities(primary, fallback) {
   return Object.freeze({
     hasAngularServices: Boolean(primary && primary.hasAngularServices),
@@ -1876,7 +2008,7 @@ function mergeWebfredState(angularState, domState, options = {}) {
     return createEmptyWebfredState('no-state-source');
   }
 
-  const currentItem = primary.currentItem || (fallback && fallback.currentItem) || null;
+  let currentItem = primary.currentItem || (fallback && fallback.currentItem) || null;
   const itemList = primary.itemList && primary.itemList.length
     ? primary.itemList
     : ((fallback && fallback.itemList) || []);
@@ -1888,7 +2020,10 @@ function mergeWebfredState(angularState, domState, options = {}) {
     ...((fallback && fallback.marks) || {}),
     ...(primary.marks || {}),
   });
-  const currentContent = primary.currentContent || (fallback && fallback.currentContent) || null;
+  const currentContent = chooseCurrentContent(primary.currentContent, fallback && fallback.currentContent);
+  if (currentContent === (fallback && fallback.currentContent) && fallback && fallback.currentItem && contentHasMediaEvidence(fallback.currentContent)) {
+    currentItem = fallback.currentItem;
+  }
   const primaryTerminal = primary.terminalState || {};
   const fallbackTerminal = fallback && fallback.terminalState ? fallback.terminalState : {};
   const terminalState = Object.freeze({

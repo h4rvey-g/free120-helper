@@ -1,10 +1,13 @@
+import { SCRIPT } from '../core/constants.js';
 import { coercePositiveInteger, normalizeString } from '../core/data.js';
 import { GRADE_STATUS } from '../scoring/grader.js';
 import { buildReviewModel } from './model.js';
 import { REVIEW_PAGE_CSS } from './page-styles.js';
 import { isQBankCacheAttempt, loadQBankSnapshotsForAttempt } from '../qbank/cache-lookup.js';
+import { extractMediaResourceUrlsForHtml, extractResourceUrlsFromHtml, fetchResourceDataByUrl, normalizeResourceUrl } from '../media/resource-cache.js';
 
 const REVIEW_PAGE_VERSION = 1;
+const REVIEW_RESOURCE_BASE_URL = `${SCRIPT.ORIGIN}/webfred/`;
 
 function escapeHtml(value) {
   return normalizeString(value, '')
@@ -260,6 +263,35 @@ function inferReviewBlockNumberFromOwnSnapshots(attempt, ownSnapshots) {
   return getDominantBlockNumberFromCounts(snapshotCounts);
 }
 
+function getQBankOriginalBlockNumber(snapshot) {
+  const metadata = snapshot && snapshot.metadata && typeof snapshot.metadata === 'object' ? snapshot.metadata : {};
+  return coercePositiveInteger(metadata.qbankCacheOriginalBlockNumber || metadata.qbankFallbackOriginalBlockNumber, 0);
+}
+
+function getExplicitReviewScopeBlockNumber(attempt) {
+  const scope = attempt && attempt.launchedScope && typeof attempt.launchedScope === 'object' ? attempt.launchedScope : {};
+  return parseExplicitBlockNumber(scope.block)
+    || parseExplicitBlockNumber(scope.selectedBlock)
+    || parseExplicitBlockNumber(scope.launchedBlock)
+    || parseExplicitBlockNumber(scope.testDefinitionDisplayName)
+    || parseExplicitBlockNumber(scope.displayName)
+    || parseExplicitBlockNumber(scope.section)
+    || parseExplicitBlockNumber(scope.testDefinitionName);
+}
+
+function chooseQBankOriginalBlockRepairNumber(attempt, qbankSnapshots = []) {
+  if (!attempt || getExplicitReviewScopeBlockNumber(attempt) || coercePositiveInteger(attempt && attempt.questionCount, 0) > 40) {
+    return 0;
+  }
+  const originalCounts = countBlockNumbers((Array.isArray(qbankSnapshots) ? qbankSnapshots : []).map(getQBankOriginalBlockNumber));
+  if (originalCounts.size !== 1) {
+    return 0;
+  }
+  const originalBlockNumber = getDominantBlockNumberFromCounts(originalCounts);
+  const recordedBlockNumber = getRecordedReviewBlockNumber(attempt) || getDominantAttemptMetadataBlockNumber(attempt);
+  return originalBlockNumber && originalBlockNumber !== recordedBlockNumber ? originalBlockNumber : 0;
+}
+
 function rebaseProgressForReviewBlock(progress, blockNumber, questionIds, questionCount) {
   const sourceProgress = progress && typeof progress === 'object' ? progress : {};
   const byBlock = sourceProgress.byBlock && typeof sourceProgress.byBlock === 'object' ? sourceProgress.byBlock : {};
@@ -434,6 +466,11 @@ function mergeQBankSnapshotWithOwnSnapshot(qbankSnapshot, ownSnapshot = null, at
     notes: normalizeString(ownSnapshot && ownSnapshot.notes, normalizeString(qbankSnapshot && qbankSnapshot.notes, '')),
     annotations: ownSnapshot && ownSnapshot.annotations ? ownSnapshot.annotations : (qbankSnapshot && qbankSnapshot.annotations),
     timingMs: Number(ownSnapshot && ownSnapshot.timingMs || 0) || Number(qbankSnapshot && qbankSnapshot.timingMs || 0) || 0,
+    resourceUrls: Object.freeze(Array.from(new Set([...(Array.isArray(qbankSnapshot && qbankSnapshot.resourceUrls) ? qbankSnapshot.resourceUrls : []), ...(Array.isArray(ownSnapshot && ownSnapshot.resourceUrls) ? ownSnapshot.resourceUrls : [])].map((url) => normalizeString(url, '')).filter(Boolean)))),
+    resourceDataByUrl: Object.freeze({
+      ...((qbankSnapshot && qbankSnapshot.resourceDataByUrl && typeof qbankSnapshot.resourceDataByUrl === 'object') ? qbankSnapshot.resourceDataByUrl : {}),
+      ...((ownSnapshot && ownSnapshot.resourceDataByUrl && typeof ownSnapshot.resourceDataByUrl === 'object') ? ownSnapshot.resourceDataByUrl : {}),
+    }),
     choices: selectedAnswerId ? mergeSnapshotChoicesWithSelection(qbankSnapshot && qbankSnapshot.choices, selectedAnswerId) : qbankSnapshot.choices,
     snapshot: Object.freeze({
       ...((qbankSnapshot && qbankSnapshot.snapshot) || {}),
@@ -450,6 +487,58 @@ function snapshotPositionKey(snapshot) {
   const blockNumber = Number((snapshot && snapshot.blockNumber) || metadata.blockNumber || 0) || 0;
   const itemIndex = Number((snapshot && snapshot.itemIndex) || metadata.itemIndex || 0) || 0;
   return blockNumber && itemIndex ? `${blockNumber}\u0000${itemIndex}` : '';
+}
+
+function snapshotResourceDataByUrl(snapshot) {
+  return snapshot && snapshot.resourceDataByUrl && typeof snapshot.resourceDataByUrl === 'object' ? snapshot.resourceDataByUrl : {};
+}
+
+function snapshotResourceUrls(snapshot) {
+  return uniqueNormalizedStrings([
+    ...(Array.isArray(snapshot && snapshot.resourceUrls) ? snapshot.resourceUrls : []),
+    ...extractResourceUrlsFromHtml(snapshot && snapshot.renderedHtml),
+  ]);
+}
+
+function snapshotHasMissingResourceData(snapshot) {
+  const resourceData = snapshotResourceDataByUrl(snapshot);
+  return snapshotResourceUrls(snapshot).some((url) => {
+    const absoluteUrl = normalizeResourceUrl(url, REVIEW_RESOURCE_BASE_URL);
+    return !resourceData[url] && !resourceData[absoluteUrl];
+  }) || /\bdata-media-id\s*=|\.mediaGallery\b/i.test(normalizeString(snapshot && snapshot.renderedHtml, ''));
+}
+
+async function hydrateSnapshotResourceData(adapterWindow, snapshot) {
+  if (!snapshot || !snapshotHasMissingResourceData(snapshot)) {
+    return snapshot;
+  }
+  const existingData = snapshotResourceDataByUrl(snapshot);
+  const mediaResourceUrls = await extractMediaResourceUrlsForHtml(adapterWindow, snapshot.renderedHtml);
+  const urls = uniqueNormalizedStrings([...snapshotResourceUrls(snapshot), ...mediaResourceUrls]);
+  const missingUrls = urls.filter((url) => {
+    const absoluteUrl = normalizeResourceUrl(url, REVIEW_RESOURCE_BASE_URL);
+    return !existingData[url] && !existingData[absoluteUrl];
+  });
+  const fetchedData = missingUrls.length ? await fetchResourceDataByUrl(adapterWindow, missingUrls, { baseUrl: REVIEW_RESOURCE_BASE_URL }) : {};
+  const resourceDataByUrl = Object.freeze({ ...existingData, ...fetchedData });
+  return Object.freeze({
+    ...snapshot,
+    resourceUrls: Object.freeze(urls),
+    resourceDataByUrl,
+  });
+}
+
+async function hydrateReviewSnapshotResources(adapterWindow, snapshots) {
+  const list = Array.isArray(snapshots) ? snapshots : [];
+  const hydrated = [];
+  for (const snapshot of list) {
+    try {
+      hydrated.push(await hydrateSnapshotResourceData(adapterWindow, snapshot));
+    } catch (_error) {
+      hydrated.push(snapshot);
+    }
+  }
+  return Object.freeze(hydrated);
 }
 
 function mergeReviewSnapshots(qbankSnapshots, ownSnapshots, attempt = null) {
@@ -713,6 +802,90 @@ function buildReviewRuntimeScript(model) {
       node.removeAttribute('data-ng-click');
     });
   }
+  function resolveReviewUrl(url) {
+    const value = text(url);
+    if (!value || /^(data|blob):/i.test(value)) return value;
+    try { return new URL(value, document.baseURI).href; } catch (_error) { return value; }
+  }
+  function getCachedResourceDataUrl(question, url) {
+    const map = (question && question.snapshot && question.snapshot.resourceDataByUrl) || {};
+    const value = text(url);
+    if (!value || !map || typeof map !== 'object') return '';
+    return text(map[value] || map[resolveReviewUrl(value)] || '');
+  }
+  function getReviewMediaUrl(question, url) {
+    return getCachedResourceDataUrl(question, url) || text(url);
+  }
+  function copySnapshotMediaSource(node) {
+    if (!node || node.getAttribute('src')) return;
+    const source = text(node.getAttribute('data-ng-src') || node.getAttribute('ng-src') || node.getAttribute('data-src'));
+    if (source && !source.includes('{{')) {
+      node.setAttribute('src', source);
+    }
+  }
+  function applyCachedResourceData(root, question) {
+    qsa('img, video, audio, source, track', root).forEach((node) => {
+      copySnapshotMediaSource(node);
+      ['src', 'poster'].forEach((attributeName) => {
+        const value = text(node.getAttribute(attributeName));
+        const dataUrl = getCachedResourceDataUrl(question, value);
+        if (dataUrl) node.setAttribute(attributeName, dataUrl);
+      });
+    });
+    qsa('[style*="url("]', root).forEach((node) => {
+      const style = text(node.getAttribute('style'));
+      if (!style) return;
+      const rewritten = style.replace(/url\\((['"]?)([^'")]+)['"]?\\)/gi, (match, _quote, url) => {
+        const dataUrl = getCachedResourceDataUrl(question, url);
+        return dataUrl ? 'url("' + dataUrl + '")' : match;
+      });
+      if (rewritten !== style) node.setAttribute('style', rewritten);
+    });
+  }
+  function createNativeMediaElement(tag, src, label) {
+    const wrapper = el('div', { className: 'f120-review-native-media-entry' });
+    if (label) wrapper.appendChild(el('div', { className: 'f120-review-native-media-label', text: label }));
+    const media = el(tag, { attrs: { src, controls: 'controls', preload: 'metadata' } });
+    media.controls = true;
+    if (tag === 'video') media.setAttribute('playsinline', 'playsinline');
+    wrapper.appendChild(media);
+    return wrapper;
+  }
+  function renderNativeMediaFallback(root, question) {
+    const urls = (question && question.snapshot && Array.isArray(question.snapshot.resourceUrls)) ? question.snapshot.resourceUrls : [];
+    if (!urls.length) return;
+    const imageUrls = urls.filter((url) => /\\.(?:png|jpe?g|gif|webp|svg)(?:\\?|$)/i.test(text(url)));
+    const videoUrls = urls.filter((url) => /\\.(?:webm|mp4|m4v|mov)(?:\\?|$)/i.test(text(url)));
+    const audioUrls = urls.filter((url) => /\\.(?:mp3|wav|ogg|oga)(?:\\?|$)/i.test(text(url)));
+    if (!imageUrls.length && !videoUrls.length && !audioUrls.length) return;
+    qsa('.NBMediaPlayer, .media-player', root).forEach((container) => {
+      if (container.querySelector('video, audio, img, .f120-review-native-media-fallback')) return;
+      const fallback = el('div', { className: 'f120-review-native-media-fallback' });
+      imageUrls.slice(0, 1).forEach((url) => fallback.appendChild(el('img', { attrs: { src: getReviewMediaUrl(question, url), alt: 'Review media diagram' } })));
+      videoUrls.slice(0, 12).forEach((url, index) => fallback.appendChild(createNativeMediaElement('video', getReviewMediaUrl(question, url), 'Media clip ' + (index + 1))));
+      audioUrls.slice(0, 12).forEach((url, index) => fallback.appendChild(createNativeMediaElement('audio', getReviewMediaUrl(question, url), 'Audio clip ' + (index + 1))));
+      container.appendChild(fallback);
+    });
+  }
+  function normalizeSnapshotMedia(root) {
+    qsa('img, video, audio, source, track', root).forEach(copySnapshotMediaSource);
+    qsa('[id^="inline-"]', root).forEach((node) => {
+      const suffix = text(node.id).replace(/^inline-/, '');
+      if (suffix && qsa('[id^="media-"]', root).some((candidate) => text(candidate.id) === 'media-' + suffix)) {
+        node.classList.add('f120-review-media-inline-duplicate');
+      }
+    });
+    qsa('video, audio', root).forEach((node) => {
+      node.controls = true;
+      node.setAttribute('controls', 'controls');
+      node.setAttribute('preload', 'metadata');
+      node.removeAttribute('autoplay');
+      try { if (typeof node.load === 'function') node.load(); } catch (_error) {}
+    });
+    qsa('.NBMediaPlayer, .media-player, .media.magnify, [id^="media-"], [id^="inline-"]', root).forEach((node) => {
+      node.classList.add('f120-review-media-ready');
+    });
+  }
   function insertStatusMarker(row, kind, symbol) {
     const input = row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
     const marker = el('span', { className: 'f120-review-option-status f120-review-option-status--' + kind, text: symbol || '' });
@@ -795,6 +968,10 @@ function buildReviewRuntimeScript(model) {
       root = medley.firstElementChild || medley;
     }
     disableInteractiveControls(medley);
+    renderNativeMediaFallback(medley, question);
+    normalizeSnapshotMedia(medley);
+    applyCachedResourceData(medley, question);
+    qsa('video, audio', medley).forEach((node) => { try { if (typeof node.load === 'function') node.load(); } catch (_error) {} });
     decorateOptionRows(medley, question);
     insertTimeSpent(root && root.nodeType === 1 ? root : medley, question);
   }
@@ -981,6 +1158,7 @@ function buildReviewHtml(attempt, snapshots = [], options = {}) {
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <base href="${escapeHtml(REVIEW_RESOURCE_BASE_URL)}">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${escapeHtml(title)}</title>
   <style>${REVIEW_PAGE_CSS}</style>
@@ -1033,20 +1211,28 @@ async function openReviewTab(options = {}) {
     }
     const ownSnapshots = await storage.listQuestionSnapshots(attemptId);
     const reviewAttempt = prepareAttemptForReview(attempt, ownSnapshots);
-    const qbankSnapshots = await loadQBankSnapshotsForAttempt(storage, reviewAttempt, ownSnapshots);
-    const snapshots = mergeReviewSnapshots(qbankSnapshots, ownSnapshots, reviewAttempt);
+    let qbankSnapshots = await loadQBankSnapshotsForAttempt(storage, reviewAttempt, ownSnapshots);
+    const qbankOriginalRepairBlockNumber = chooseQBankOriginalBlockRepairNumber(reviewAttempt, qbankSnapshots);
+    const effectiveReviewAttempt = qbankOriginalRepairBlockNumber ? rebaseAttemptForReviewBlock(reviewAttempt, qbankOriginalRepairBlockNumber) : reviewAttempt;
+    if (qbankOriginalRepairBlockNumber) {
+      qbankSnapshots = await loadQBankSnapshotsForAttempt(storage, effectiveReviewAttempt, ownSnapshots);
+    }
+    qbankSnapshots = await hydrateReviewSnapshotResources(adapterWindow, qbankSnapshots);
+    const hydratedOwnSnapshots = await hydrateReviewSnapshotResources(adapterWindow, ownSnapshots);
+    const snapshots = mergeReviewSnapshots(qbankSnapshots, hydratedOwnSnapshots, effectiveReviewAttempt);
     const debugDiagnostics = Boolean(options.debugDiagnostics || options.debugReview);
     if (debugDiagnostics) {
       debugReviewLog(adapterWindow, 'openReviewTab inputs', Object.freeze({
         debugDiagnostics,
         attemptId,
-        attempt: summarizeAttemptBlocksForDebug(reviewAttempt),
+        attempt: summarizeAttemptBlocksForDebug(effectiveReviewAttempt),
         originalAttempt: summarizeAttemptBlocksForDebug(attempt),
-        ownSnapshots: summarizeSnapshotsForDebug(ownSnapshots),
+        ownSnapshots: summarizeSnapshotsForDebug(hydratedOwnSnapshots),
+        qbankOriginalRepairBlockNumber,
         qbankSnapshots: summarizeSnapshotsForDebug(qbankSnapshots),
         mergedSnapshots: summarizeSnapshotsForDebug(snapshots),
         answers: Object.freeze({
-          responseKeys: Object.keys((reviewAttempt && reviewAttempt.responses && typeof reviewAttempt.responses === 'object') ? reviewAttempt.responses : {}).length,
+          responseKeys: Object.keys((effectiveReviewAttempt && effectiveReviewAttempt.responses && typeof effectiveReviewAttempt.responses === 'object') ? effectiveReviewAttempt.responses : {}).length,
           snapshotSelections: snapshots.filter((snapshot) => normalizeString(snapshot && snapshot.selectedAnswerId, '')).map((snapshot) => Object.freeze({
             questionId: normalizeString(snapshot && snapshot.questionId, ''),
             blockNumber: Number((snapshot && snapshot.blockNumber) || (snapshot && snapshot.metadata && snapshot.metadata.blockNumber) || 0),
@@ -1056,7 +1242,7 @@ async function openReviewTab(options = {}) {
         }),
       }));
     }
-    const blob = createReviewBlob(reviewAttempt, snapshots, adapterWindow, { debugDiagnostics });
+    const blob = createReviewBlob(effectiveReviewAttempt, snapshots, adapterWindow, { debugDiagnostics });
     const URLObject = adapterWindow.URL || URL;
     const url = URLObject.createObjectURL(blob);
     try {

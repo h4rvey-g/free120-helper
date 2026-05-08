@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
-import { createQBankCacheAttemptId, isQuestionBlockDefinition, QBANK_CACHE_ATTEMPT_PREFIX } from '../src/qbank/cache-controller.js';
+import { buildQBankSnapshotsFromSessionData, createQBankCacheAttemptId, isQuestionBlockDefinition, QBANK_CACHE_ATTEMPT_PREFIX } from '../src/qbank/cache-controller.js';
 import { loadQBankCaptureContext, resolveQBankCaptureForItems, loadQBankSnapshotsForAttempt } from '../src/qbank/cache-lookup.js';
+import { fetchResourceDataByUrl } from '../src/media/resource-cache.js';
 import { formatQBankStorageStatus, summarizeQBankCaptureStorage } from '../src/ui/launch-history.js';
+import { el } from './test-utils/fake-dom.mjs';
 
 assert.equal(QBANK_CACHE_ATTEMPT_PREFIX, 'qbank-cache');
 assert.equal(isQuestionBlockDefinition({ displayName: 'Step 1 Block 1' }), true);
@@ -46,6 +48,85 @@ const incompleteQBankStorageSummary = summarizeQBankCaptureStorage([
 ], [Object.freeze({ program: 'USMLE', examName: 'STPF1', testDefinitionName: 'STPF1C0137' })]);
 assert.equal(incompleteQBankStorageSummary.complete, false);
 assert.equal(formatQBankStorageStatus(incompleteQBankStorageSummary), 'Incomplete');
+
+const qbankMediaFragment = el('div', { class: 'NBSinglePage' }, [el('div', { id: 'item1' }, [
+  el('div', { class: 'NBMediaPlayer' }, [el('div', { class: 'media-player', filename: '097247.mediaGallery', 'data-media-id': '097247' }, [])]),
+  el('div', { class: 'NBExposition' }, ['Media stem']),
+  el('div', { id: 'COMP-MEDIA_div', class: 'NBOptionListComp answerbox' }, [el('ol', { class: 'options' }, [
+    el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'COMP-MEDIA', value: 'A' }), el('span', {}, ['A'])]),
+    el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'COMP-MEDIA', value: 'B' }), el('span', {}, ['B'])]),
+  ]), el('fred-show-answer', { ans: 'B' }, [])]),
+])]);
+const qbankMediaDocument = {
+  cookie: 'nbme.webfred.exam.session=previous-session',
+  createElement() {
+    return { content: qbankMediaFragment, set innerHTML(_value) {}, get innerHTML() { return ''; } };
+  },
+};
+const qbankMediaFetchCalls = [];
+const qbankMediaWindow = Object.freeze({
+  document: qbankMediaDocument,
+  btoa: (value) => Buffer.from(value, 'binary').toString('base64'),
+  fetch: async (url, options = {}) => {
+    const textUrl = String(url);
+    qbankMediaFetchCalls.push(Object.freeze({ url: textUrl, cache: options && options.cache || '' }));
+    if (textUrl.includes('/webfred/api/metadata/097247')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ content: [{ hotspotConfig: [{ contentMedia: { src: 'api/Resource?name=synthetic.webm' }, diagramMedia: { src: 'api/Resource?name=synthetic.jpg' } }] }] }),
+      };
+    }
+    if (textUrl.includes('synthetic.jpg')) {
+      return { ok: true, status: 200, headers: new Map([['content-type', 'image/jpeg'], ['content-length', '3']]), arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer };
+    }
+    if (textUrl.includes('synthetic.webm')) {
+      return { ok: true, status: 200, headers: new Map([['content-type', 'video/webm'], ['content-length', '3']]), arrayBuffer: async () => Uint8Array.from([4, 5, 6]).buffer };
+    }
+    throw new Error(`unexpected fetch ${textUrl}`);
+  },
+});
+const qbankMediaCapture = await buildQBankSnapshotsFromSessionData(qbankMediaWindow, qbankMediaDocument, {
+  program: 'USMLE',
+  examName: 'STPF1',
+  testDefinitionName: 'STPF1C0139',
+  testDefinitionDisplayName: 'Step 1 Block 3',
+  blockNumber: 3,
+}, {
+  examBlock: { medleys: [Object.freeze({ medleyId: 'MED-MEDIA', items: [Object.freeze({ componentId: 'COMP-MEDIA', answerable: true })] })] },
+}, {
+  'MED-MEDIA': '<synthetic media html>',
+}, 'synthetic-session');
+assert.equal(qbankMediaCapture.snapshots.length, 1);
+assert.ok(qbankMediaCapture.snapshots[0].resourceUrls.includes('api/Resource?name=synthetic.webm'), 'qbank media metadata resources captured');
+assert.ok(qbankMediaCapture.snapshots[0].resourceDataByUrl['https://orientation.nbme.org/webfred/api/Resource?name=synthetic.webm'], 'qbank media video cached as data URL');
+assert.ok(qbankMediaCapture.snapshots[0].resourceDataByUrl['https://orientation.nbme.org/webfred/api/Resource?name=synthetic.jpg'], 'qbank media image cached as data URL');
+assert.ok(qbankMediaFetchCalls.some((call) => call.url.includes('synthetic.webm') && call.cache === 'no-store'), 'qbank resource capture bypasses stale browser cache');
+assert.ok(qbankMediaFetchCalls.some((call) => call.url.includes('synthetic.jpg') && call.cache === 'no-store'), 'qbank image capture bypasses stale browser cache');
+assert.ok(qbankMediaDocument.cookie.startsWith('nbme.webfred.exam.session=previous-session'), 'qbank capture restores prior active WebFRED session cookie after resource fetch');
+const cacheRetryCalls = [];
+const cacheRetryDocument = { cookie: '' };
+const cacheRetryWindow = Object.freeze({
+  document: cacheRetryDocument,
+  location: Object.freeze({ href: 'https://orientation.nbme.org/webfred/#!/main' }),
+  btoa: (value) => Buffer.from(value, 'binary').toString('base64'),
+  fetch: async (url, options = {}) => {
+    cacheRetryCalls.push(Object.freeze({ url: String(url), cache: options && options.cache || '', cookie: cacheRetryDocument.cookie }));
+    if ((options && options.cache) === 'no-store') {
+      return { ok: false, status: 404, headers: new Map() };
+    }
+    if ((options && options.cache) === 'reload') {
+      return { ok: true, status: 200, headers: new Map([['content-type', 'image/jpeg'], ['content-length', '2']]), arrayBuffer: async () => Uint8Array.from([7, 8]).buffer };
+    }
+    throw new Error('expected cache retry mode');
+  },
+});
+const cacheRetryData = await fetchResourceDataByUrl(cacheRetryWindow, ['api/Resource?name=stale-cache.jpg'], { baseUrl: 'https://orientation.nbme.org/webfred/', cache: 'no-store', sessionId: 'session-for-resource' });
+assert.ok(cacheRetryData['https://orientation.nbme.org/webfred/api/Resource?name=stale-cache.jpg'], 'resource capture retries after stale 404 cache entry');
+assert.deepEqual(cacheRetryCalls.map((call) => call.cache), ['no-store', 'reload']);
+assert.ok(cacheRetryCalls.every((call) => call.cookie.startsWith('nbme.webfred.exam.session=session-for-resource')), 'resource fetch binds WebFRED session cookie while reading protected assets');
+assert.ok(cacheRetryDocument.cookie.startsWith('nbme.webfred.exam.session='), 'temporary WebFRED session cookie removed after resource capture');
+assert.ok(cacheRetryDocument.cookie.includes('Max-Age=0'), 'temporary WebFRED session cookie expires after resource capture');
 
 const qbankAttempt = Object.freeze({
   id: 'qbank-cache:USMLE:STPF1:Block1',

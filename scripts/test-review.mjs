@@ -78,8 +78,59 @@ assert.match(html, /ol\.options > li\.stContext/);
 assert.match(html, /div\[id\$="_div"\]\.NBOptionListComp\.answerbox/);
 assert.match(html, /f120-review-block-filter/);
 assert.match(html, /Score summary/);
+assert.match(html, /<base href="https:\/\/orientation\.nbme\.org\/webfred\/">/);
+assert.match(html, /function normalizeSnapshotMedia/);
+assert.match(html, /preload', 'metadata'/);
+assert.match(html, /function applyCachedResourceData/);
 assert.doesNotMatch(html, /fetch\s*\(/);
 assert.doesNotMatch(html, /XMLHttpRequest/);
+
+const cachedMediaReviewModel = buildReviewModel(Object.freeze({
+  id: 'attempt-cached-media-review',
+  status: ATTEMPT_STATUS.COMPLETED,
+  questionIds: Object.freeze(['media-q1']),
+  questionCount: 1,
+  responses: Object.freeze({}),
+  correctAnswers: Object.freeze({}),
+  launchedScope: Object.freeze({ block: '1' }),
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 1, itemCount: 1 })]),
+}), [Object.freeze({
+  attemptId: 'attempt-cached-media-review',
+  questionId: 'media-q1',
+  blockNumber: 1,
+  itemIndex: 1,
+  renderedHtml: '<div id="item1"><div class="NBMediaPlayer"><div class="media-player" data-media-id="synthetic"></div></div><img src="api/Resource?name=synthetic.png"><video src="api/Resource?name=synthetic.webm"></video><ol class="options"></ol></div>',
+  resourceUrls: Object.freeze(['api/Resource?name=synthetic.png', 'api/Resource?name=synthetic.webm']),
+  resourceDataByUrl: Object.freeze({
+    'api/Resource?name=synthetic.png': 'data:image/png;base64,AAAA',
+    'https://orientation.nbme.org/webfred/api/Resource?name=synthetic.webm': 'data:video/webm;base64,BBBB',
+  }),
+})]);
+assert.equal(cachedMediaReviewModel.questions[0].snapshot.resourceDataByUrl['https://orientation.nbme.org/webfred/api/Resource?name=synthetic.png'], 'data:image/png;base64,AAAA');
+const cachedMediaHtml = buildReviewHtml(Object.freeze({
+  id: 'attempt-cached-media-review',
+  status: ATTEMPT_STATUS.COMPLETED,
+  questionIds: Object.freeze(['media-q1']),
+  questionCount: 1,
+  responses: Object.freeze({}),
+  correctAnswers: Object.freeze({}),
+  launchedScope: Object.freeze({ block: '1' }),
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 1, itemCount: 1 })]),
+}), [Object.freeze({
+  attemptId: 'attempt-cached-media-review',
+  questionId: 'media-q1',
+  blockNumber: 1,
+  itemIndex: 1,
+  renderedHtml: '<div id="item1"><div class="NBMediaPlayer"><div class="media-player" data-media-id="synthetic"></div></div><img src="api/Resource?name=synthetic.png"><video src="api/Resource?name=synthetic.webm"></video><ol class="options"></ol></div>',
+  resourceUrls: Object.freeze(['api/Resource?name=synthetic.png', 'api/Resource?name=synthetic.webm']),
+  resourceDataByUrl: Object.freeze({
+    'api/Resource?name=synthetic.png': 'data:image/png;base64,AAAA',
+    'https://orientation.nbme.org/webfred/api/Resource?name=synthetic.webm': 'data:video/webm;base64,BBBB',
+  }),
+})]);
+assert.match(cachedMediaHtml, /data:image\/png;base64,AAAA/, 'review embeds cached image data');
+assert.match(cachedMediaHtml, /data:video\/webm;base64,BBBB/, 'review embeds cached video data');
+assert.match(cachedMediaHtml, /f120-review-native-media-fallback/, 'review runtime can render native media fallback');
 
 const historyAttempt = Object.freeze({
   ...attempt,
@@ -424,6 +475,57 @@ assert.match(openedReviewHtml, /reviewBlockRepair/, 'end-exam review records blo
 assert.match(openedReviewHtml, /"blockNumber":40/, 'end-exam review rebases stale Block 1 metadata to real completed block');
 assert.doesNotMatch(openedReviewHtml, /"modelBlocks":\[1\]/, 'end-exam review model no longer fixed to Block 1');
 assert.match(openedReviewHtml, /qbank-endexam-block40-1/, 'end-exam review uses qbank snapshots from repaired block');
+
+const staleLiveBlockOneQBankOriginalBlockResult = await openReviewTab({
+  attemptId: 'attempt-live-step1-block3-recorded-as-block1',
+  window: Object.freeze({
+    Blob,
+    URL: Object.freeze({ createObjectURL(blob) { return `blob:test-review/${blob.size}`; } }),
+    open() { return { location: { href: '' }, document: { body: {}, title: '' } }; },
+    console: Object.freeze({ info() {} }),
+  }),
+  storage: Object.freeze({
+    async getAttempt() {
+      return Object.freeze({
+        id: 'attempt-live-step1-block3-recorded-as-block1',
+        status: ATTEMPT_STATUS.COMPLETED,
+        launchedScope: Object.freeze({ mode: '', block: '', testDefinitionDisplayName: 'Key' }),
+        questionIds: Object.freeze(['webfred:USMLE:Block-1:MED-B3:COMP-B3']),
+        questionCount: 1,
+        blockMetadata: Object.freeze([Object.freeze({ blockNumber: 1, itemCount: 1, label: 'Block 1' })]),
+        correctAnswers: Object.freeze({ 'webfred:USMLE:Block-1:MED-B3:COMP-B3': 'A' }),
+        source: Object.freeze({
+          itemMetadataByQuestionId: Object.freeze({
+            'webfred:USMLE:Block-1:MED-B3:COMP-B3': Object.freeze({ questionId: 'webfred:USMLE:Block-1:MED-B3:COMP-B3', blockNumber: 1, itemIndex: 1, componentId: 'COMP-B3', medleyId: 'MED-B3' }),
+          }),
+        }),
+      });
+    },
+    async listQuestionSnapshots(attemptId) {
+      if (String(attemptId).startsWith('qbank-cache:')) {
+        return [Object.freeze({
+          id: 'qbank-step1-block3-snapshot',
+          attemptId,
+          questionId: 'webfred:USMLE:Block-3:MED-B3:COMP-B3',
+          blockNumber: 3,
+          itemIndex: 1,
+          correctAnswerId: 'A',
+          renderedHtml: '<div id="qbank-step1-block3"><ol class="options"></ol></div>',
+          metadata: Object.freeze({ componentId: 'COMP-B3', medleyId: 'MED-B3', blockNumber: 3, itemIndex: 1 }),
+        })];
+      }
+      return [];
+    },
+    async listAttempts() {
+      return [Object.freeze({ id: 'qbank-cache:USMLE:STPF1:STPF1C0139', source: Object.freeze({ cacheKind: 'qbank' }) })];
+    },
+  }),
+  debugDiagnostics: true,
+});
+const staleLiveBlockOneQBankOriginalBlockHtml = await staleLiveBlockOneQBankOriginalBlockResult.blob.text();
+assert.match(staleLiveBlockOneQBankOriginalBlockHtml, /"reviewBlockRepair":\{"blockNumber":3/, 'review repairs Block 1 live attempt from qbank original Block 3 evidence');
+assert.match(staleLiveBlockOneQBankOriginalBlockHtml, /"blockCounts":\{"3":1\}/, 'review model displays repaired Block 3');
+assert.doesNotMatch(staleLiveBlockOneQBankOriginalBlockHtml, /"modelBlocks":\[1\]/, 'stale Block 1 does not survive qbank-original repair');
 
 const blockMetadataRepairHtml = buildReviewHtml(Object.freeze({
   id: 'attempt-endexam-block-metadata-only-repair',

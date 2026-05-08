@@ -294,13 +294,6 @@ function resolveQBankEntryForItem(context, item, options = {}) {
     }
   }
   for (const candidate of candidates) {
-    const positionEntry = context.snapshotEntriesByPositionKey.get(qbankPositionKey(candidate));
-    if (positionEntry) {
-      const matchSource = candidate === candidates[0] ? 'block-position' : 'block-position-original-block';
-      return Object.freeze({ ...positionEntry, matchSource });
-    }
-  }
-  for (const candidate of candidates) {
     const itemMetadata = getMetadata(candidate);
     const itemBlockNumber = coercePositiveInteger((candidate && candidate.blockNumber) || itemMetadata.blockNumber, 0);
     const allowUnscopedComponentFallback = options.allowUnscopedComponentFallback === true;
@@ -312,6 +305,13 @@ function resolveQBankEntryForItem(context, item, options = {}) {
       : null;
     if (unscopedEntry) {
       return Object.freeze({ ...unscopedEntry, matchSource: itemBlockNumber ? 'component-medley-unscoped-block-mismatch' : 'component-medley-unscoped' });
+    }
+  }
+  for (const candidate of candidates) {
+    const positionEntry = context.snapshotEntriesByPositionKey.get(qbankPositionKey(candidate));
+    if (positionEntry) {
+      const matchSource = candidate === candidates[0] ? 'block-position' : 'block-position-original-block';
+      return Object.freeze({ ...positionEntry, matchSource });
     }
   }
   return null;

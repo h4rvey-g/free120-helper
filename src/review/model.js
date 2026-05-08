@@ -463,6 +463,35 @@ function getSnapshotOriginalItemIndex(snapshot) {
   return coercePositiveInteger(metadata.qbankCacheOriginalItemIndex || metadata.qbankFallbackOriginalItemIndex, 0);
 }
 
+function normalizeReviewResourceUrl(url) {
+  const value = normalizeString(url, '');
+  if (!value || /^(?:data|blob):/i.test(value)) {
+    return value;
+  }
+  try {
+    return new URL(value, `${SCRIPT.ORIGIN}/webfred/`).href;
+  } catch (_error) {
+    return value;
+  }
+}
+
+function normalizeSnapshotResourceDataByUrl(snapshot) {
+  const source = plainObjectOrEmpty(snapshot && snapshot.resourceDataByUrl);
+  const entries = [];
+  Object.entries(source).forEach(([url, dataUrl]) => {
+    const normalizedDataUrl = normalizeString(dataUrl, '');
+    if (!/^data:/i.test(normalizedDataUrl)) {
+      return;
+    }
+    uniqueStrings([url, normalizeReviewResourceUrl(url)]).forEach((candidateUrl) => {
+      if (candidateUrl) {
+        entries.push([candidateUrl, normalizedDataUrl]);
+      }
+    });
+  });
+  return Object.freeze(Object.fromEntries(entries));
+}
+
 function normalizeSnapshotForReview(snapshot) {
   if (!snapshot) {
     return Object.freeze({
@@ -471,6 +500,7 @@ function normalizeSnapshotForReview(snapshot) {
       promptHtml: '',
       choices: Object.freeze([]),
       resourceUrls: Object.freeze([]),
+      resourceDataByUrl: Object.freeze({}),
       metadata: Object.freeze({}),
     });
   }
@@ -481,6 +511,7 @@ function normalizeSnapshotForReview(snapshot) {
     promptHtml: normalizeString(snapshot.promptHtml, ''),
     choices: Object.freeze(normalizeChoices(snapshot)),
     resourceUrls: Object.freeze(arrayOrEmpty(snapshot.resourceUrls).map((url) => normalizeString(url, '')).filter(Boolean)),
+    resourceDataByUrl: normalizeSnapshotResourceDataByUrl(snapshot),
     metadata: Object.freeze(plainObjectOrEmpty(snapshot.metadata)),
   });
 }

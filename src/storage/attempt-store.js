@@ -382,6 +382,7 @@ function normalizeQuestionSnapshot(candidate, existing = null) {
     annotations: normalizeRecord(candidate.annotations || (existing && existing.annotations)),
     timingMs: normalizePositiveInteger(candidate.timingMs !== undefined ? candidate.timingMs : (existing && existing.timingMs), 0),
     resourceUrls: normalizeStringArray(candidate.resourceUrls || (existing && existing.resourceUrls)),
+    resourceDataByUrl: normalizeRecord(candidate.resourceDataByUrl || (existing && existing.resourceDataByUrl)),
     contentHash: normalizeString(candidate.contentHash !== undefined ? candidate.contentHash : (existing && existing.contentHash), ''),
     snapshot: normalizeRecord(candidate.snapshot || (existing && existing.snapshot)),
   });
@@ -410,6 +411,7 @@ function removeQuestionContentFromSnapshot(snapshot) {
   delete sanitized.annotations;
   delete sanitized.snapshot;
   delete sanitized.resourceUrls;
+  delete sanitized.resourceDataByUrl;
   return sanitized;
 }
 

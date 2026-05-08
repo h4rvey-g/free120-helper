@@ -51,9 +51,10 @@ await assert.rejects(() => storage.createAttempt({ id: 'attempt-storage' }), /al
 await assert.rejects(() => storage.updateAttempt('missing-attempt', {}), /Attempt not found/);
 
 const snapshots = createSyntheticSnapshots('attempt-storage');
-const savedSnapshot = await storage.saveQuestionSnapshot(snapshots[0]);
+const savedSnapshot = await storage.saveQuestionSnapshot({ ...snapshots[0], resourceDataByUrl: { 'api/Resource?name=synthetic.png': 'data:image/png;base64,AAAA' } });
 assert.equal(savedSnapshot.id, createQuestionSnapshotId('attempt-storage', 'q1'));
 assert.equal(savedSnapshot.choices.length, 3);
+assert.equal(savedSnapshot.resourceDataByUrl['api/Resource?name=synthetic.png'], 'data:image/png;base64,AAAA');
 assert.equal((await storage.getQuestionSnapshot('attempt-storage', 'q1')).questionId, 'q1');
 assert.equal((await storage.listQuestionSnapshots('attempt-storage')).length, 1);
 
@@ -66,6 +67,7 @@ assert.equal(historyEnvelope.exportType, EXPORT_TYPES.HISTORY_ONLY);
 assert.equal(historyEnvelope.questionSnapshots.length, 0);
 assert.equal(historyEnvelope.attempts[0].notesByQuestionId, undefined);
 assert.equal(historyEnvelope.attempts[0].renderedHtml, undefined);
+assert.equal(historyEnvelope.questionSnapshots[0], undefined);
 
 await assert.rejects(() => storage.exportFullBackup(), /requires explicit warning/);
 const fullEnvelope = await storage.exportFullBackup({ acknowledgeWarning: true });
@@ -73,6 +75,7 @@ assert.equal(fullEnvelope.exportType, EXPORT_TYPES.FULL_BACKUP);
 assert.equal(fullEnvelope.warning, FULL_BACKUP_WARNING);
 assert.equal(fullEnvelope.questionSnapshots.length, 1);
 assert.match(fullEnvelope.questionSnapshots[0].renderedHtml, /Synthetic stem/);
+assert.equal(fullEnvelope.questionSnapshots[0].resourceDataByUrl['api/Resource?name=synthetic.png'], 'data:image/png;base64,AAAA');
 
 await assert.rejects(() => storage.importJson('{bad json'), /malformed/);
 await assert.rejects(() => storage.importJson({ formatVersion: 999, attempts: [] }), /Unsupported import format/);
