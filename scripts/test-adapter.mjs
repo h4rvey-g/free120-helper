@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAPTURE_SOURCE } from '../src/core/constants.js';
+import { ANSWER_KEY_CAPTURE_STATUS, ANSWER_KEY_CAPTURE_SOURCE, ATTEMPT_STATUS } from '../src/core/constants.js';
 import { createAnswerKeyCaptureController, createAnswerKeyCaptureResult, createFailedAnswerKeyCaptureResult } from '../src/answer-keys/controller.js';
-import { createTrackingQuestionSnapshot, getTrackingItemList, buildTrackingAttemptPatch } from '../src/tracking/engine.js';
+import { createTrackingEngine, createTrackingQuestionSnapshot, getTrackingItemList, buildTrackingAttemptPatch } from '../src/tracking/engine.js';
 import {
   buildQuestionIdentity,
   coercePositiveInteger,
@@ -612,6 +612,122 @@ assert.match(liveFallbackTrackingSnapshot.renderedHtml, /Synthetic stem/, 'live 
 assert.equal(liveFallbackTrackingSnapshot.choices.length, 3, 'live snapshot choices keep review option rows without qbank cache');
 assert.equal(liveFallbackTrackingSnapshot.selectedAnswerId, 'A', 'live snapshot records selected answer without qbank cache');
 assert.equal(liveFallbackTrackingSnapshot.metadata.questionContentSource, 'dom-current-item');
+
+const staleQ5Id = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', examSection: 'Block 1', medleyId: 'medley-1', componentId: 'component-q5', blockNumber: 1, itemIndex: 5 }).questionId;
+const staleQ6Id = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', examSection: 'Block 1', medleyId: 'medley-1', componentId: 'component-q6', blockNumber: 1, itemIndex: 6 }).questionId;
+const staleSelectionRows = el('ol', { class: 'options' }, ['A', 'B', 'C', 'D', 'E'].map((answerId) => (
+  el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'q6', value: answerId }), el('span', {}, [`Synthetic ${answerId}`])])
+)));
+const staleSelectionItem = el('div', { id: 'item-q6', 'data-component-id': 'component-q6', 'data-item-index': '6' }, [
+  el('div', { class: 'NBExposition' }, ['Unanswered q6 stem']),
+  el('div', { id: 'q6_div', class: 'NBOptionListComp answerbox' }, [staleSelectionRows]),
+]);
+const staleSelectionState = createSyntheticAdapterState({
+  examIdentity: Object.freeze({ program: 'Step 1', examName: 'Free 120', section: 'Block 1' }),
+  launchedScope: Object.freeze({ mode: 'test', block: '1', section: 'Block 1' }),
+  currentItem: Object.freeze({ questionId: staleQ6Id, componentId: 'component-q6', medleyId: 'medley-1', blockNumber: 1, itemIndex: 6, selectedAnswerId: 'E', current: true, identitySource: 'component-medley' }),
+  itemList: Object.freeze([
+    Object.freeze({ questionId: staleQ5Id, componentId: 'component-q5', medleyId: 'medley-1', blockNumber: 1, itemIndex: 5, selectedAnswerId: 'E', current: false, identitySource: 'component-medley' }),
+    Object.freeze({ questionId: staleQ6Id, componentId: 'component-q6', medleyId: 'medley-1', blockNumber: 1, itemIndex: 6, selectedAnswerId: 'E', current: true, identitySource: 'component-medley' }),
+  ]),
+  answers: Object.freeze({ [staleQ5Id]: 'E', [staleQ6Id]: 'E' }),
+  currentContent: Object.freeze({
+    renderedHtml: staleSelectionItem.outerHTML,
+    promptHtml: 'Unanswered q6 stem',
+    choices: Object.freeze(['A', 'B', 'C', 'D', 'E'].map((answerId, index) => Object.freeze({ id: answerId, label: `Synthetic ${answerId}`, index: index + 1, selected: answerId === 'E' }))),
+    resourceUrls: Object.freeze([]),
+  }),
+});
+const staleSelectionSnapshot = createTrackingQuestionSnapshot({
+  attemptId: attempt.id,
+  attempt,
+  adapterState: staleSelectionState,
+  item: staleSelectionState.currentItem,
+  itemList: staleSelectionState.itemList,
+  timingByQuestionId: {},
+  qbankCaptureResult: null,
+  root: staleSelectionItem,
+  document: fakeDocument,
+});
+assert.equal(staleSelectionSnapshot.selectedAnswerId, '', 'unchecked live DOM clears stale adapter answer on newly visited unanswered item');
+assert.equal(staleSelectionSnapshot.choices.some((choice) => choice.selected), false, 'unchecked live DOM clears stale selected choice marker');
+
+let staleEngineAttempt = null;
+const staleEngineStorage = {
+  snapshots: [],
+  async ready() { return {}; },
+  async listInProgressStates() { return []; },
+  async createAttempt(candidate) {
+    staleEngineAttempt = Object.freeze({
+      id: 'attempt-stale-dom-clear',
+      status: ATTEMPT_STATUS.IN_PROGRESS,
+      questionIds: Object.freeze([]),
+      questionCount: 0,
+      responses: Object.freeze({}),
+      correctAnswers: Object.freeze({}),
+      markedQuestionIds: Object.freeze([]),
+      timingByQuestionId: Object.freeze({}),
+      source: Object.freeze({}),
+      ...candidate,
+      responses: Object.freeze({ [staleQ5Id]: 'E', [staleQ6Id]: 'E' }),
+      source: Object.freeze({
+        ...((candidate && candidate.source) || {}),
+        responseAliases: Object.freeze({
+          byPosition: Object.freeze({ '1\u00005': 'E', '1\u00006': 'E' }),
+          byComponent: Object.freeze({ '1\u0000medley-1\u0000component-q6': 'E' }),
+        }),
+      }),
+    });
+    return staleEngineAttempt;
+  },
+  async getAttempt() { return staleEngineAttempt; },
+  async updateAttempt(_attemptId, patchCandidate) {
+    staleEngineAttempt = Object.freeze({ ...staleEngineAttempt, ...patchCandidate });
+    return staleEngineAttempt;
+  },
+  async saveInProgressState() { return {}; },
+  async listAttempts() { return staleEngineAttempt ? [staleEngineAttempt] : []; },
+  async saveQuestionSnapshot(snapshotCandidate) {
+    this.snapshots.push(snapshotCandidate);
+    return snapshotCandidate;
+  },
+};
+const staleEngineDocument = Object.assign(createFakeDocument(el('main', {}, [
+  el('nav', {}, [el('ol', { id: 'leftnav' }, [
+    el('li', {}, [el('span', { class: 'index' }, ['5'])]),
+    el('li', { class: 'currentitem', 'aria-current': 'true' }, [el('span', { class: 'index' }, ['6'])]),
+  ])]),
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'medley-1', 'data-medley-id': 'medley-1' }, [staleSelectionItem])])]),
+  el('div', {}, ['Block 1 of 1']),
+]), { title: 'Synthetic Step 1 Free 120' }), {
+  addEventListener() {},
+  removeEventListener() {},
+  visibilityState: 'visible',
+});
+const staleEngineWindow = Object.assign(createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%201'), {
+  setTimeout(callback) { callback(); return 1; },
+  clearTimeout() {},
+  setInterval() { return 1; },
+  clearInterval() {},
+  addEventListener() {},
+  removeEventListener() {},
+});
+const staleEngine = createTrackingEngine({
+  window: staleEngineWindow,
+  document: staleEngineDocument,
+  runtimeContext: Object.freeze({ origin: 'https://orientation.nbme.org', pathname: '/webfred/', search: '', href: staleEngineWindow.location.href }),
+  storage: staleEngineStorage,
+  webfredAdapter: {
+    waitForInitialization: async () => staleSelectionState,
+    readState: () => staleSelectionState,
+  },
+  logger: { debug() {}, warn() {} },
+});
+await staleEngine.start({ adapterState: staleSelectionState });
+assert.equal(staleEngineAttempt.responses[staleQ5Id], 'E', 'previous answered item keeps selected answer');
+assert.equal(staleEngineAttempt.responses[staleQ6Id], '', 'visible unanswered item clears stale carried-over adapter answer');
+assert.equal(staleEngineStorage.snapshots.at(-1).selectedAnswerId, '', 'saved snapshot for visible unanswered item has no selected answer');
+await staleEngine.stop('synthetic-stop');
 
 const patch = buildTrackingAttemptPatch(
   attempt,

@@ -398,19 +398,13 @@ function getSelectedChoiceId(snapshot) {
 
 function normalizeSelectedAnswerIdForReview(snapshot, selectedAnswerId) {
   const normalized = normalizeString(selectedAnswerId, '');
+  if (!normalized) {
+    return '';
+  }
   const choices = arrayOrEmpty(snapshot && snapshot.choices);
   const matchingChoice = choices.find((choice) => choiceAnswerIdMatches(choice, normalized));
   if (matchingChoice) {
     return normalizeString(matchingChoice.id, normalized);
-  }
-  const selectedChoiceId = getSelectedChoiceId(snapshot);
-  if (selectedChoiceId) {
-    return selectedChoiceId;
-  }
-  const snapshotSelected = normalizeString(snapshot && snapshot.selectedAnswerId, '');
-  const snapshotChoice = choices.find((choice) => choiceAnswerIdMatches(choice, snapshotSelected));
-  if (snapshotChoice) {
-    return normalizeString(snapshotChoice.id, snapshotSelected);
   }
   return normalized;
 }
@@ -496,14 +490,14 @@ function buildReviewQuestion(attempt, questionId, snapshot, result, candidate = 
   const correctAnswers = plainObjectOrEmpty(attempt && attempt.correctAnswers);
   const metadata = getAttemptItemMetadata(attempt, questionId);
   const timing = getQuestionTimingRecord(attempt, questionId);
-  const rawSelectedAnswerId = normalizeString(
-    result && result.selectedAnswerId,
-    normalizeString(responses[questionId], normalizeString(snapshot && snapshot.selectedAnswerId, ''))
-  );
-  const selectedAnswerId = normalizeSelectedAnswerIdForReview(
-    snapshot,
-    rawSelectedAnswerId || getReviewResponseAliasForQuestion(attempt, questionId, snapshot, result, candidate && candidate.attemptIndex)
-  );
+  const responseRecorded = Object.prototype.hasOwnProperty.call(responses, questionId);
+  const resultSelectedAnswerId = normalizeString(result && result.selectedAnswerId, '');
+  const rawSelectedAnswerId = responseRecorded
+    ? normalizeString(responses[questionId], '')
+    : (resultSelectedAnswerId || normalizeString(snapshot && snapshot.selectedAnswerId, ''));
+  const selectedAnswerId = responseRecorded && !rawSelectedAnswerId
+    ? ''
+    : normalizeSelectedAnswerIdForReview(snapshot, rawSelectedAnswerId);
   const correctAnswerId = normalizeString(
     result && result.correctAnswerId,
     normalizeString(correctAnswers[questionId], normalizeString(snapshot && snapshot.correctAnswerId, ''))
@@ -908,8 +902,9 @@ function buildScoringAttemptForReview(sourceAttempt, questionIds, snapshots = []
   const correctAnswers = { ...filterRecordToQuestionIds(sourceAttempt && sourceAttempt.correctAnswers, ids) };
   allowed.forEach((questionId) => {
     const snapshot = snapshotByQuestionId.get(questionId);
-    const snapshotSelectedAnswerId = normalizeString(snapshot && snapshot.selectedAnswerId, getSelectedChoiceId(snapshot));
-    if (!normalizeString(responses[questionId], '') && snapshotSelectedAnswerId) {
+    const responseRecorded = Object.prototype.hasOwnProperty.call(responses, questionId);
+    const snapshotSelectedAnswerId = normalizeString(snapshot && snapshot.selectedAnswerId, '');
+    if (!responseRecorded && snapshotSelectedAnswerId) {
       responses[questionId] = snapshotSelectedAnswerId;
     }
     if (!normalizeString(correctAnswers[questionId], '') && normalizeString(snapshot && snapshot.correctAnswerId, '')) {

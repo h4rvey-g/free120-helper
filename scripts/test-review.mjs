@@ -151,29 +151,34 @@ const fallbackKeyModel = buildReviewModel({
 }, [Object.freeze({ questionId: 'q-fallback', correctAnswerId: 'A' })]);
 assert.equal(fallbackKeyModel.questions[0].status, 'correct');
 
-const qbankSelectionOnlyModel = buildReviewModel(Object.freeze({
-  id: 'attempt-qbank-selection-only',
-  questionIds: Object.freeze(['selection-q1']),
+const explicitEmptyResponseModel = buildReviewModel(Object.freeze({
+  id: 'attempt-explicit-empty-response',
+  questionIds: Object.freeze(['empty-response-q1']),
   questionCount: 1,
-  correctAnswers: Object.freeze({ 'selection-q1': 'B' }),
+  responses: Object.freeze({ 'empty-response-q1': '' }),
+  correctAnswers: Object.freeze({ 'empty-response-q1': 'B' }),
   source: Object.freeze({
+    responseAliases: Object.freeze({
+      byPosition: Object.freeze({ '1\u00001': 'A' }),
+      byComponent: Object.freeze({ '1\u0000empty-medley\u0000empty-component': 'A' }),
+    }),
     itemMetadataByQuestionId: Object.freeze({
-      'selection-q1': Object.freeze({ questionId: 'selection-q1', blockNumber: 1, itemIndex: 1 }),
+      'empty-response-q1': Object.freeze({ questionId: 'empty-response-q1', blockNumber: 1, itemIndex: 1, componentId: 'empty-component', medleyId: 'empty-medley' }),
     }),
   }),
 }), [Object.freeze({
-  questionId: 'selection-q1',
+  questionId: 'empty-response-q1',
   blockNumber: 1,
   itemIndex: 1,
+  selectedAnswerId: 'A',
   choices: Object.freeze([
     Object.freeze({ id: 'A', label: 'Option A', index: 1, selected: true }),
     Object.freeze({ id: 'B', label: 'Option B', index: 2, selected: false }),
   ]),
-  selectedAnswerId: '',
   correctAnswerId: 'B',
 })]);
-assert.equal(qbankSelectionOnlyModel.questions[0].selectedAnswerId, 'A', 'review keeps selected choice from merged snapshot when response id is absent');
-assert.equal(qbankSelectionOnlyModel.questions[0].status, 'incorrect');
+assert.equal(explicitEmptyResponseModel.questions[0].selectedAnswerId, '', 'explicit empty response blocks stale snapshot and alias selection in review');
+assert.equal(explicitEmptyResponseModel.questions[0].status, 'omitted');
 
 const validReviewQuestionIds = Array.from({ length: 40 }, (_item, index) => `valid-q${index + 1}`);
 const noisyAttempt = Object.freeze({

@@ -361,15 +361,24 @@ function normalizeTrackingResponseAliases(source) {
 }
 
 function addTrackingResponseAlias(aliasDraft, item, answerId) {
-  const normalizedAnswerId = normalizeString(answerId, '');
-  if (!item || !normalizedAnswerId) {
+  if (!item) {
     return;
   }
+  const normalizedAnswerId = normalizeString(answerId, '');
   const positionKey = trackingPositionKey(item);
+  const componentKey = trackingComponentKey(item);
+  if (!normalizedAnswerId) {
+    if (positionKey) {
+      delete aliasDraft.byPosition[positionKey];
+    }
+    if (componentKey) {
+      delete aliasDraft.byComponent[componentKey];
+    }
+    return;
+  }
   if (positionKey) {
     aliasDraft.byPosition[positionKey] = normalizedAnswerId;
   }
-  const componentKey = trackingComponentKey(item);
   if (componentKey) {
     aliasDraft.byComponent[componentKey] = normalizedAnswerId;
   }
@@ -405,11 +414,12 @@ function getTrackingResponseAliasForItem(responseAliases, item) {
   return normalizeString(byComponent[trackingComponentKey(item)], normalizeString(byPosition[trackingPositionKey(item)], ''));
 }
 
-function fillScopedResponsesFromAliases(responses, itemList, responseAliases) {
+function fillScopedResponsesFromAliases(responses, itemList, responseAliases, options = {}) {
   const draft = { ...(isPlainObject(responses) ? responses : {}) };
+  const skipQuestionIds = new Set(Array.isArray(options.skipQuestionIds) ? options.skipQuestionIds : []);
   (Array.isArray(itemList) ? itemList : []).forEach((item) => {
     const questionId = normalizeString(item && item.questionId, '');
-    if (!questionId || normalizeString(draft[questionId], '')) {
+    if (!questionId || skipQuestionIds.has(questionId) || normalizeString(draft[questionId], '')) {
       return;
     }
     const aliasAnswerId = getTrackingResponseAliasForItem(responseAliases, item);
@@ -588,11 +598,15 @@ function appendTrackingAnswerTimeline(existingTimeline, changes, attemptId, reas
 function mergeTrackingResponses(existingResponses, answerEntries) {
   const responses = normalizeRecord(existingResponses || {});
   const changes = [];
+  const emptyKnownQuestionIds = [];
   answerEntries.forEach((entry, questionId) => {
     if (!entry || !entry.known) {
       return;
     }
     const normalizedAnswerId = normalizeString(entry.answerId, '');
+    if (!normalizedAnswerId) {
+      emptyKnownQuestionIds.push(questionId);
+    }
     const previousAnswerId = normalizeString(responses[questionId], '');
     if (previousAnswerId !== normalizedAnswerId) {
       responses[questionId] = normalizedAnswerId;
@@ -604,7 +618,7 @@ function mergeTrackingResponses(existingResponses, answerEntries) {
       }));
     }
   });
-  return Object.freeze({ responses, changes });
+  return Object.freeze({ responses, changes, emptyKnownQuestionIds: Object.freeze(emptyKnownQuestionIds) });
 }
 
 function mergeTrackingMarkedQuestionIds(existingMarkedQuestionIds, adapterState, itemList) {
@@ -796,27 +810,59 @@ function extractTrackingAnnotationsFromDom(root) {
   });
 }
 
-function mergeTrackingChoices(stateChoices, domChoices) {
+function getTrackingChoiceSelectionTokens(choice, fallbackIndex) {
+  const index = coercePositiveInteger(choice && choice.index, fallbackIndex + 1);
+  return uniqueNormalizedStrings([
+    choice && choice.id,
+    index ? String(index) : '',
+    index ? `option-${index}` : '',
+  ]).map((token) => token.toLowerCase());
+}
+
+function applyTrackingChoiceSelection(choices, authoritativeChoices) {
+  if (!Array.isArray(authoritativeChoices)) {
+    return choices;
+  }
+  const selectedTokens = new Set(authoritativeChoices.flatMap((choice, index) => (
+    choice && choice.selected ? getTrackingChoiceSelectionTokens(choice, index) : []
+  )));
+  return choices.map((choice, index) => Object.freeze({
+    ...choice,
+    selected: getTrackingChoiceSelectionTokens(choice, index).some((token) => selectedTokens.has(token)),
+  }));
+}
+
+function mergeTrackingChoices(stateChoices, domChoices, options = {}) {
   const merged = [];
-  const seen = new Set();
+  const indexById = new Map();
   [...(Array.isArray(stateChoices) ? stateChoices : []), ...(Array.isArray(domChoices) ? domChoices : [])].forEach((choice, index) => {
     if (!choice) {
       return;
     }
     const id = normalizeString(choice.id, `option-${index + 1}`);
-    if (seen.has(id)) {
-      return;
-    }
-    seen.add(id);
-    merged.push(Object.freeze({
+    const normalized = Object.freeze({
       id,
       label: normalizeString(choice.label, ''),
-      index: coercePositiveInteger(choice.index, merged.length + 1),
+      index: coercePositiveInteger(choice.index, index + 1),
       selected: Boolean(choice.selected),
       disabled: Boolean(choice.disabled),
-    }));
+    });
+    const existingIndex = indexById.get(id);
+    if (existingIndex === undefined) {
+      indexById.set(id, merged.length);
+      merged.push(normalized);
+      return;
+    }
+    const existing = merged[existingIndex];
+    merged[existingIndex] = Object.freeze({
+      ...existing,
+      label: normalized.label || existing.label,
+      index: normalized.index || existing.index,
+      selected: normalized.selected,
+      disabled: normalized.disabled,
+    });
   });
-  return merged;
+  return applyTrackingChoiceSelection(merged, options.authoritativeSelectionChoices);
 }
 
 function getSnapshotContentSource(qbankSnapshot, root, stateContent) {
@@ -896,9 +942,11 @@ function createTrackingQuestionSnapshot(candidate) {
   const qbankMatchSourcesByQuestionId = isPlainObject(qbankSource.matchSourcesByQuestionId) ? qbankSource.matchSourcesByQuestionId : {};
   const qbankAttemptIds = Array.isArray(qbankSource.qbankAttemptIds) ? qbankSource.qbankAttemptIds : [];
   const domChoices = root ? extractChoicesFromDom(root) : [];
-  const liveChoices = mergeTrackingChoices(stateContent.choices, domChoices);
-  const choices = mergeTrackingChoices(qbankSnapshot && qbankSnapshot.choices, liveChoices);
-  const selectedAnswerId = getTrackingSelectedAnswerId(questionId, item, adapterState, liveChoices);
+  const domAnswerAuthoritative = Boolean(root && domChoices.length);
+  const selectedFromDom = domAnswerAuthoritative ? firstNonEmpty([(domChoices.find((choice) => choice && choice.selected) || {}).id, extractSelectedAnswerIdFromDom(root)]) : '';
+  const liveChoices = mergeTrackingChoices(stateContent.choices, domChoices, { authoritativeSelectionChoices: domAnswerAuthoritative ? domChoices : [] });
+  const choices = mergeTrackingChoices(qbankSnapshot && qbankSnapshot.choices, liveChoices, { authoritativeSelectionChoices: domAnswerAuthoritative ? liveChoices : [] });
+  const selectedAnswerId = domAnswerAuthoritative ? selectedFromDom : '';
   const correctAnswerId = getCorrectAnswerForQuestion(questionId, candidate.attempt, candidate.qbankCaptureResult);
   const notes = root ? extractTrackingNotesFromDom(root) : Object.freeze({ status: 'unavailable', text: '', fields: [] });
   const annotations = root ? extractTrackingAnnotationsFromDom(root) : Object.freeze({ status: 'unavailable', highlights: [], strikeouts: [] });
@@ -1040,7 +1088,9 @@ function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, curr
   const questionIds = mergeTrackingQuestionIds(mappedExistingQuestionIds, itemList, currentItem && currentItem.questionId, { replaceWithScopedItems: scopedQuestionSet });
   const mappedExistingResponses = scopedMapper ? scopedMapper.mapRecord(existingResponses) : existingResponses;
   const aliasFilledResponses = scopedQuestionSet
-    ? fillScopedResponsesFromAliases(mappedExistingResponses, itemList, normalizeTrackingResponseAliases(existingSource))
+    ? fillScopedResponsesFromAliases(mappedExistingResponses, itemList, normalizeTrackingResponseAliases(existingSource), {
+        skipQuestionIds: mergeResult.emptyKnownQuestionIds,
+      })
     : existingResponses;
   const responses = scopedQuestionSet ? filterRecordToQuestionIds(aliasFilledResponses, questionIds) : existingResponses;
   const responseAliases = buildTrackingResponseAliases(existingAttempt, itemList, responses, mergeResult.changes);
@@ -1198,6 +1248,7 @@ async function persistTrackingState(options) {
   let effectiveAdapterState = adapterState;
   let effectiveItemList = itemList;
   let effectiveCurrentItem = currentItem;
+  const domAnswerAuthoritative = Boolean(root && domChoices.length);
   if (root) {
     const domIdentity = extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow);
     const rootQuestionId = normalizeString(domIdentity && domIdentity.questionId, '');
@@ -1207,7 +1258,7 @@ async function persistTrackingState(options) {
       effectiveAdapterState && effectiveAdapterState.answers ? effectiveAdapterState.answers[effectiveCurrentQuestionId] : '',
       effectiveCurrentItem && effectiveCurrentItem.selectedAnswerId,
     ]);
-    const shouldPreferCapturedAdapterState = Boolean(options.preferAdapterState && effectiveCurrentSelectedAnswerId);
+    const shouldPreferCapturedAdapterState = Boolean(options.preferAdapterState && effectiveCurrentSelectedAnswerId && !domAnswerAuthoritative);
     if (rootQuestionId && rootQuestionId !== effectiveCurrentQuestionId && !shouldPreferCapturedAdapterState) {
       const rootItem = normalizeTrackingItem({
         questionId: rootQuestionId,
@@ -1230,20 +1281,22 @@ async function persistTrackingState(options) {
       }
       effectiveItemList = replaced;
       effectiveCurrentItem = rootItem;
-    } else if (selectedFromDom) {
+    } else if (domAnswerAuthoritative || selectedFromDom) {
       effectiveCurrentItem = Object.freeze({ ...effectiveCurrentItem, selectedAnswerId: selectedFromDom, current: true });
       effectiveItemList = effectiveItemList.map((item) => item.questionId === effectiveCurrentItem.questionId ? Object.freeze({ ...item, selectedAnswerId: selectedFromDom, current: true }) : item);
     }
-    if ((effectiveCurrentItem && effectiveCurrentItem.questionId) && (effectiveCurrentItem !== currentItem || effectiveItemList !== itemList || selectedFromDom)) {
+    if ((effectiveCurrentItem && effectiveCurrentItem.questionId) && (effectiveCurrentItem !== currentItem || effectiveItemList !== itemList || selectedFromDom || domAnswerAuthoritative)) {
       effectiveAdapterState = Object.freeze({
         ...adapterState,
         currentItem: effectiveCurrentItem,
         itemList: Object.freeze(effectiveItemList),
-        answers: Object.freeze(selectedFromDom ? { ...(adapterState.answers || {}), [effectiveCurrentItem.questionId]: selectedFromDom } : (adapterState.answers || {})),
+        answers: Object.freeze(domAnswerAuthoritative
+          ? { ...(adapterState.answers || {}), [effectiveCurrentItem.questionId]: selectedFromDom }
+          : (selectedFromDom ? { ...(adapterState.answers || {}), [effectiveCurrentItem.questionId]: selectedFromDom } : (adapterState.answers || {}))),
       });
     }
   }
-  const currentChoices = mergeTrackingChoices(stateChoices, domChoices);
+  const currentChoices = mergeTrackingChoices(stateChoices, domChoices, { authoritativeSelectionChoices: domAnswerAuthoritative ? domChoices : null });
   const answerEntries = collectTrackingAnswerEntries(effectiveAdapterState, effectiveItemList, currentChoices);
   const mergeResult = mergeTrackingResponses(attempt.responses || {}, answerEntries);
   const markedQuestionIds = mergeTrackingMarkedQuestionIds(attempt.markedQuestionIds || [], effectiveAdapterState, effectiveItemList);
@@ -1347,7 +1400,6 @@ function createTrackingEngine(options = {}) {
   let stopped = false;
   let pollTimerId = null;
   let eventFlushTimerId = null;
-  let unsubscribeAdapter = null;
   let lastState = null;
   let lastError = null;
   let qbankCaptureContext = null;
@@ -1407,7 +1459,6 @@ function createTrackingEngine(options = {}) {
       if (attempt && attempt.status !== ATTEMPT_STATUS.IN_PROGRESS) {
         stopped = true;
         stopPolling();
-        stopAdapterSubscription();
         removeDomListeners();
         setStatus(TRACKING_ENGINE_STATUS.STOPPED);
       } else if (adapterState.status === WEBFRED_ADAPTER_STATUS.READY) {
@@ -1524,23 +1575,6 @@ function createTrackingEngine(options = {}) {
     }
   }
 
-  function startAdapterSubscription() {
-    if (!webfredAdapter || typeof webfredAdapter.onStateChange !== 'function' || unsubscribeAdapter) {
-      return;
-    }
-    unsubscribeAdapter = webfredAdapter.onStateChange((state) => {
-      lastState = state;
-      scheduleEventFlush('adapter-state-change');
-    });
-  }
-
-  function stopAdapterSubscription() {
-    if (typeof unsubscribeAdapter === 'function') {
-      unsubscribeAdapter();
-    }
-    unsubscribeAdapter = null;
-  }
-
   async function start(startOptions = {}) {
     if (startPromise) {
       return startPromise;
@@ -1587,7 +1621,6 @@ function createTrackingEngine(options = {}) {
   async function stop(reason = 'stop') {
     stopped = true;
     stopPolling();
-    stopAdapterSubscription();
     removeDomListeners();
     await queueFlush(reason, { pauseTiming: true, force: true });
     setStatus(TRACKING_ENGINE_STATUS.STOPPED);

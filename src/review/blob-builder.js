@@ -417,12 +417,16 @@ function mergeSnapshotChoicesWithSelection(targetChoices, selectedAnswerId) {
   })));
 }
 
-function mergeQBankSnapshotWithOwnSnapshot(qbankSnapshot, ownSnapshot = null) {
+function mergeQBankSnapshotWithOwnSnapshot(qbankSnapshot, ownSnapshot = null, attempt = null) {
   if (!ownSnapshot) {
     return qbankSnapshot;
   }
-  const selectedAnswerId = mapSelectedAnswerIdForSnapshot(ownSnapshot, qbankSnapshot)
-    || normalizeString(qbankSnapshot && qbankSnapshot.selectedAnswerId, '');
+  const questionId = normalizeString(qbankSnapshot && qbankSnapshot.questionId, normalizeString(ownSnapshot && ownSnapshot.questionId, ''));
+  const responses = attempt && attempt.responses && typeof attempt.responses === 'object' ? attempt.responses : {};
+  const responseRecorded = Object.prototype.hasOwnProperty.call(responses, questionId);
+  const selectedAnswerId = responseRecorded
+    ? normalizeString(responses[questionId], '')
+    : (mapSelectedAnswerIdForSnapshot(ownSnapshot, qbankSnapshot) || normalizeString(qbankSnapshot && qbankSnapshot.selectedAnswerId, ''));
   return Object.freeze({
     ...qbankSnapshot,
     selectedAnswerId,
@@ -448,7 +452,7 @@ function snapshotPositionKey(snapshot) {
   return blockNumber && itemIndex ? `${blockNumber}\u0000${itemIndex}` : '';
 }
 
-function mergeReviewSnapshots(qbankSnapshots, ownSnapshots) {
+function mergeReviewSnapshots(qbankSnapshots, ownSnapshots, attempt = null) {
   const ownList = Array.isArray(ownSnapshots) ? ownSnapshots : [];
   const qbankList = Array.isArray(qbankSnapshots) ? qbankSnapshots : [];
   const ownByQuestionId = new Map(ownList.map((snapshot) => [normalizeString(snapshot && snapshot.questionId, ''), snapshot]));
@@ -464,7 +468,8 @@ function mergeReviewSnapshots(qbankSnapshots, ownSnapshots) {
   return qbankList
     .map((snapshot) => mergeQBankSnapshotWithOwnSnapshot(
       snapshot,
-      ownByQuestionId.get(normalizeString(snapshot && snapshot.questionId, '')) || ownByPosition.get(snapshotPositionKey(snapshot))
+      ownByQuestionId.get(normalizeString(snapshot && snapshot.questionId, '')) || ownByPosition.get(snapshotPositionKey(snapshot)),
+      attempt
     ))
     .concat(ownList.filter((snapshot) => !qbankQuestionIds.has(normalizeString(snapshot && snapshot.questionId, '')) && !qbankPositionKeys.has(snapshotPositionKey(snapshot))));
 }
@@ -1029,7 +1034,7 @@ async function openReviewTab(options = {}) {
     const ownSnapshots = await storage.listQuestionSnapshots(attemptId);
     const reviewAttempt = prepareAttemptForReview(attempt, ownSnapshots);
     const qbankSnapshots = await loadQBankSnapshotsForAttempt(storage, reviewAttempt, ownSnapshots);
-    const snapshots = mergeReviewSnapshots(qbankSnapshots, ownSnapshots);
+    const snapshots = mergeReviewSnapshots(qbankSnapshots, ownSnapshots, reviewAttempt);
     const debugDiagnostics = Boolean(options.debugDiagnostics || options.debugReview);
     if (debugDiagnostics) {
       debugReviewLog(adapterWindow, 'openReviewTab inputs', Object.freeze({
@@ -1040,6 +1045,15 @@ async function openReviewTab(options = {}) {
         ownSnapshots: summarizeSnapshotsForDebug(ownSnapshots),
         qbankSnapshots: summarizeSnapshotsForDebug(qbankSnapshots),
         mergedSnapshots: summarizeSnapshotsForDebug(snapshots),
+        answers: Object.freeze({
+          responseKeys: Object.keys((reviewAttempt && reviewAttempt.responses && typeof reviewAttempt.responses === 'object') ? reviewAttempt.responses : {}).length,
+          snapshotSelections: snapshots.filter((snapshot) => normalizeString(snapshot && snapshot.selectedAnswerId, '')).map((snapshot) => Object.freeze({
+            questionId: normalizeString(snapshot && snapshot.questionId, ''),
+            blockNumber: Number((snapshot && snapshot.blockNumber) || (snapshot && snapshot.metadata && snapshot.metadata.blockNumber) || 0),
+            itemIndex: Number((snapshot && snapshot.itemIndex) || (snapshot && snapshot.metadata && snapshot.metadata.itemIndex) || 0),
+            selectedAnswerId: normalizeString(snapshot && snapshot.selectedAnswerId, ''),
+          })).slice(0, 80),
+        }),
       }));
     }
     const blob = createReviewBlob(reviewAttempt, snapshots, adapterWindow, { debugDiagnostics });
