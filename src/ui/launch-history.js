@@ -1,12 +1,21 @@
 import { SCRIPT, DB_SCHEMA, ATTEMPT_STATUS, EXPORT_TYPES, FULL_BACKUP_WARNING } from '../core/constants.js';
 import { coerceNonNegativeInteger, coercePositiveInteger, hasFunction, isObject, isPlainObject, normalizeString, uniqueNormalizedStrings as uniqueStrings } from '../core/data.js';
-import { createQBankCacheAttemptId, discoverLaunchQuestionDefinitions } from '../qbank/cache-controller.js';
+import {
+  QBANK_CAPTURE_STEP_OPTIONS,
+  createQBankCacheAttemptId,
+  discoverLaunchQuestionDefinitions,
+  filterQBankDefinitionsByStep,
+  formatQBankStepLabel,
+  getQBankStepKey,
+  normalizeQBankStepSelection,
+} from '../qbank/cache-controller.js';
 import { canOpenAttemptReview as canOpenReviewFromHistory, isQBankCacheAttempt } from '../review/readiness.js';
 import { createElement, removeChildren, setMessage } from './dom.js';
 
 const LAUNCH_HISTORY_STYLE_ID = 'f120-launch-history-style';
 const LAUNCH_HISTORY_ROOT_ID = 'f120-launch-history';
 const IMPORT_REPLACE_WARNING = 'Replace mode overwrites local attempts when imported attempt ids conflict. This cannot be undone unless you exported a backup first.';
+const QBANK_LAUNCH_WARNING_WRAPPER_VERSION = 'step-block-warning-v2';
 
 function safeDate(value) {
   const text = normalizeString(value, '');
@@ -300,20 +309,30 @@ function isQBankAttemptComplete(attempt) {
     && getQBankKnownAnswerCount(attempt) >= questionCount;
 }
 
-function summarizeQBankCaptureStorage(attempts, definitions = []) {
+function summarizeQBankCaptureStorage(attempts, definitions = [], selectedStepKeys = null) {
   const qbankAttempts = (Array.isArray(attempts) ? attempts : []).filter(isQBankCacheAttempt);
-  const definitionIds = (Array.isArray(definitions) ? definitions : []).map(createQBankCacheAttemptId);
-  const expectedCount = definitionIds.length || qbankAttempts.length;
-  const attemptsById = new Map(qbankAttempts.map((attempt) => [normalizeString(attempt && attempt.id, ''), attempt]));
+  const sourceDefinitions = Array.isArray(definitions) ? definitions : [];
+  const selectedSteps = normalizeQBankStepSelection(selectedStepKeys, { defaultAll: true });
+  const scopedDefinitions = sourceDefinitions.length
+    ? filterQBankDefinitionsByStep(sourceDefinitions, selectedSteps)
+    : [];
+  const allowedStepSet = new Set(selectedSteps);
+  const scopedAttempts = qbankAttempts.filter((attempt) => {
+    const stepKey = getQBankStepKey(getAttemptLaunchDefinition(attempt)) || getQBankStepKey(attempt);
+    return !stepKey || allowedStepSet.has(stepKey);
+  });
+  const definitionIds = scopedDefinitions.map(createQBankCacheAttemptId);
+  const expectedCount = definitionIds.length || scopedAttempts.length;
+  const attemptsById = new Map(scopedAttempts.map((attempt) => [normalizeString(attempt && attempt.id, ''), attempt]));
   const expectedAttempts = definitionIds.length
     ? definitionIds.map((id) => attemptsById.get(id)).filter(Boolean)
-    : qbankAttempts;
+    : scopedAttempts;
   const completeAttempts = expectedAttempts.filter(isQBankAttemptComplete);
   const storedQuestions = expectedAttempts.reduce((sum, attempt) => sum + coerceNonNegativeInteger(attempt && attempt.questionCount, Array.isArray(attempt && attempt.questionIds) ? attempt.questionIds.length : 0), 0);
   const knownAnswers = expectedAttempts.reduce((sum, attempt) => sum + getQBankKnownAnswerCount(attempt), 0);
   const failedAttempts = expectedAttempts.filter((attempt) => attempt && !isQBankAttemptComplete(attempt)).length;
   return Object.freeze({
-    available: qbankAttempts.length > 0,
+    available: scopedAttempts.length > 0,
     complete: expectedCount > 0 && completeAttempts.length === expectedCount,
     expectedCount,
     storedCount: expectedAttempts.length,
@@ -322,6 +341,7 @@ function summarizeQBankCaptureStorage(attempts, definitions = []) {
     storedQuestions,
     knownAnswers,
     definitionsKnown: definitionIds.length > 0,
+    selectedStepKeys: Object.freeze(selectedSteps.slice()),
   });
 }
 
@@ -336,6 +356,64 @@ function formatQBankStorageStatus(summary) {
     return 'Partial';
   }
   return 'Incomplete';
+}
+
+function findIncompleteQBankStepsForDefinitions(attempts, definitions = []) {
+  const qbankAttempts = (Array.isArray(attempts) ? attempts : []).filter(isQBankCacheAttempt);
+  const attemptsById = new Map(qbankAttempts.map((attempt) => [normalizeString(attempt && attempt.id, ''), attempt]));
+  const incompleteByKey = new Map();
+  (Array.isArray(definitions) ? definitions : []).forEach((definition) => {
+    const stepKey = getQBankStepKey(definition);
+    if (!stepKey) {
+      return;
+    }
+    const attempt = attemptsById.get(createQBankCacheAttemptId(definition));
+    if (!isQBankAttemptComplete(attempt)) {
+      const current = incompleteByKey.get(stepKey) || { key: stepKey, label: formatQBankStepLabel(stepKey), missingBlocks: 0 };
+      incompleteByKey.set(stepKey, { ...current, missingBlocks: current.missingBlocks + 1 });
+    }
+  });
+  return Object.freeze(Array.from(incompleteByKey.values()).map((entry) => Object.freeze(entry)));
+}
+
+function normalizeQBankComparable(value) {
+  return normalizeString(value, '').toLowerCase();
+}
+
+function findLaunchDefinitionForSessionParams(definitions = [], params = {}) {
+  const sourceDefinitions = Array.isArray(definitions) ? definitions : [];
+  const testDefinitionName = normalizeQBankComparable(params.testDefinition || params.testDefinitionName || params.section);
+  const examName = normalizeQBankComparable(params.examName || params.exam);
+  const publicationName = normalizeQBankComparable(params.examPublicationName || params.publicationName);
+  return sourceDefinitions.find((definition) => testDefinitionName && normalizeQBankComparable(definition.testDefinitionName) === testDefinitionName)
+    || sourceDefinitions.find((definition) => testDefinitionName && normalizeQBankComparable(definition.testDefinitionDisplayName) === testDefinitionName)
+    || sourceDefinitions.find((definition) => examName && publicationName
+      && normalizeQBankComparable(definition.examName) === examName
+      && normalizeQBankComparable(definition.publicationName) === publicationName)
+    || sourceDefinitions.find((definition) => examName && normalizeQBankComparable(definition.examName) === examName)
+    || null;
+}
+
+function createLaunchDefinitionFromSessionParams(params = {}) {
+  const source = isPlainObject(params) ? params : {};
+  const examName = normalizeString(source.examName || source.exam, '');
+  const testDefinitionName = normalizeString(source.testDefinition || source.testDefinitionName || source.section, '');
+  if (!examName && !testDefinitionName) {
+    return null;
+  }
+  const program = normalizeString(source.program || source.programName, 'USMLE');
+  const publicationName = normalizeString(source.examPublicationName || source.publicationName, '');
+  const displayName = normalizeString(source.testDefinitionDisplayName || source.displayName || source.section, testDefinitionName || examName || 'Exam block');
+  return Object.freeze({
+    program,
+    programName: normalizeString(source.programName || program, program),
+    examName,
+    examDisplayName: normalizeString(source.examDisplayName || examName, examName),
+    publicationName,
+    testDefinitionName,
+    testDefinitionDisplayName: displayName,
+    blockNumber: extractBlockNumber(displayName) || extractBlockNumber(testDefinitionName),
+  });
 }
 
 function formatHistoryAttemptRow(attempt) {
@@ -771,6 +849,33 @@ function injectLaunchHistoryStyles(adapterDocument) {
       border-radius: 10px;
       background: #f8fafc;
     }
+    .f120-launch-history__qbank-step-options {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid rgba(37, 99, 235, 0.16);
+      border-radius: 10px;
+      background: #eff6ff;
+    }
+    .f120-launch-history__qbank-step-title {
+      color: #1e3a8a;
+      font-weight: 850;
+    }
+    .f120-launch-history__qbank-step-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+    }
+    .f120-launch-history__qbank-step-option {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #111827;
+      font-weight: 750;
+    }
+    .f120-launch-history__qbank-step-option input {
+      margin: 0;
+    }
     .f120-launch-history__qbank-storage-label {
       color: #475569;
       font-weight: 750;
@@ -1023,6 +1128,25 @@ function buildLaunchHistoryDom(adapterDocument) {
     className: 'f120-launch-history__qbank-storage',
     attributes: { role: 'status', 'aria-live': 'polite' },
   });
+  const qbankStepOptions = createElement(adapterDocument, 'div', { className: 'f120-launch-history__qbank-step-options' });
+  qbankStepOptions.appendChild(createElement(adapterDocument, 'div', {
+    className: 'f120-launch-history__qbank-step-title',
+    text: 'Capture steps',
+  }));
+  const qbankStepList = createElement(adapterDocument, 'div', { className: 'f120-launch-history__qbank-step-list' });
+  QBANK_CAPTURE_STEP_OPTIONS.forEach((option) => {
+    const input = createElement(adapterDocument, 'input', {
+      type: 'checkbox',
+      dataset: { qbankStepKey: option.key },
+      attributes: { checked: 'checked' },
+    });
+    input.checked = true;
+    qbankStepList.appendChild(createElement(adapterDocument, 'label', { className: 'f120-launch-history__qbank-step-option' }, [
+      input,
+      createElement(adapterDocument, 'span', { text: option.label }),
+    ]));
+  });
+  qbankStepOptions.appendChild(qbankStepList);
   const qbankActions = createElement(adapterDocument, 'div', { className: 'f120-launch-history__qbank-actions' });
   const qbankStartButton = createActionButton(adapterDocument, 'Start QBank capture', 'start-qbank-capture', 'f120-launch-history__action--primary');
   qbankActions.append(qbankStartButton);
@@ -1031,7 +1155,7 @@ function buildLaunchHistoryDom(adapterDocument) {
     hidden: true,
     attributes: { role: 'status' },
   });
-  qbankBody.append(qbankStorage, qbankActions, qbankMessage);
+  qbankBody.append(qbankStorage, qbankStepOptions, qbankActions, qbankMessage);
   qbankPanel.append(qbankHeader, qbankBody);
 
   panel.append(header, toolbar, body, footer);
@@ -1049,6 +1173,8 @@ function buildLaunchHistoryDom(adapterDocument) {
     qbankCloseButton,
     qbankStartButton,
     qbankStorage,
+    qbankStepOptions,
+    qbankStepList,
     refreshButton,
     exportHistoryButton,
     exportFullButton,
@@ -1084,9 +1210,26 @@ function createLaunchHistory(options = {}) {
   let qbankStorageSummary = summarizeQBankCaptureStorage([]);
   let refreshRequestId = 0;
   let qbankCaptureInProgress = false;
+  let launchServiceQBankWarningInstalled = false;
+  let launchServiceQBankWarningRetryTimer = null;
+  let launchServiceQBankWarningRetryCount = 0;
 
   injectLaunchHistoryStyles(adapterDocument);
   const dom = buildLaunchHistoryDom(adapterDocument);
+
+  function getSelectedQBankStepKeys() {
+    const inputs = dom.qbankStepList && typeof dom.qbankStepList.querySelectorAll === 'function'
+      ? Array.from(dom.qbankStepList.querySelectorAll('input[data-qbank-step-key]'))
+      : [];
+    const selected = inputs
+      .filter((input) => input && input.checked !== false)
+      .map((input) => input && input.dataset && input.dataset.qbankStepKey);
+    return normalizeQBankStepSelection(selected, { defaultAll: true });
+  }
+
+  function getSelectedQBankStepLabel() {
+    return getSelectedQBankStepKeys().map(formatQBankStepLabel).join(', ');
+  }
 
   function setBusy(busy) {
     const disabled = Boolean(busy) || qbankCaptureInProgress;
@@ -1099,6 +1242,7 @@ function createLaunchHistory(options = {}) {
       dom.qbankCaptureButton,
       dom.qbankStartButton,
       dom.cleanCacheButton,
+      ...(dom.qbankStepList && typeof dom.qbankStepList.querySelectorAll === 'function' ? Array.from(dom.qbankStepList.querySelectorAll('input[data-qbank-step-key]')) : []),
     ].forEach((element) => {
       if (element) {
         element.disabled = disabled;
@@ -1114,6 +1258,7 @@ function createLaunchHistory(options = {}) {
   function renderQBankStorageSummary(summary = qbankStorageSummary) {
     removeChildren(dom.qbankStorage);
     appendDetailRow(adapterDocument, dom.qbankStorage, 'Status', formatQBankStorageStatus(summary));
+    appendDetailRow(adapterDocument, dom.qbankStorage, 'Selected', getSelectedQBankStepLabel() || 'None');
     appendDetailRow(adapterDocument, dom.qbankStorage, 'Blocks', summary.expectedCount > 0 ? `${summary.completeCount}/${summary.expectedCount} complete` : `${summary.storedCount} stored`);
     appendDetailRow(adapterDocument, dom.qbankStorage, 'Questions', String(summary.storedQuestions));
     appendDetailRow(adapterDocument, dom.qbankStorage, 'Answer keys', String(summary.knownAnswers));
@@ -1127,11 +1272,86 @@ function createLaunchHistory(options = {}) {
     }
   }
 
+  function getLaunchContextForQBankWarning() {
+    try {
+      return discoverLaunchQuestionDefinitions(adapterWindow, adapterDocument);
+    } catch (error) {
+      logger.debug('Launch QBank warning metadata unavailable.', error);
+      return null;
+    }
+  }
+
+  function findAngularService(serviceName) {
+    const angularObject = adapterWindow.angular;
+    if (!angularObject || !adapterDocument || typeof adapterDocument.querySelectorAll !== 'function') {
+      return null;
+    }
+    const roots = Array.from(adapterDocument.querySelectorAll('[ng-controller], [ng-app], body'));
+    for (const root of roots) {
+      try {
+        const element = angularObject.element(root);
+        const injector = element && typeof element.injector === 'function' ? element.injector() : null;
+        if (injector && typeof injector.get === 'function') {
+          const service = injector.get(serviceName);
+          if (service) {
+            return service;
+          }
+        }
+      } catch (_error) {}
+    }
+    return null;
+  }
+
+  function setQBankLaunchWarningDebug(debugState) {
+    try {
+      adapterWindow.__free120QBankWarningLast = Object.freeze({
+        at: new Date().toISOString(),
+        wrapperVersion: QBANK_LAUNCH_WARNING_WRAPPER_VERSION,
+        ...(isPlainObject(debugState) ? debugState : {}),
+      });
+    } catch (_error) {}
+  }
+
+  function unblockNativeLaunchPage() {
+    try {
+      const jquery = adapterWindow.$ || adapterWindow.jQuery;
+      if (jquery && typeof jquery.unblockUI === 'function') {
+        jquery.unblockUI();
+      }
+    } catch (error) {
+      logger.debug('Native launch unblock failed.', error);
+    }
+  }
+
+  function confirmIncompleteQBankWarning(incompleteSteps, options = {}) {
+    if (!Array.isArray(incompleteSteps) || !incompleteSteps.length) {
+      return true;
+    }
+    const scopedDefinition = options.definition || null;
+    const scopedStepKey = options.stepKey || getQBankStepKey(scopedDefinition);
+    const header = scopedStepKey
+      ? `${formatQBankStepLabel(scopedStepKey)} QBank capture is incomplete.`
+      : 'QBank capture is incomplete for one or more exams:';
+    const detailLines = scopedStepKey
+      ? incompleteSteps.map((step) => `${step.label}: ${step.missingBlocks} block(s) not captured`)
+      : incompleteSteps.map((step) => `${step.label}: ${step.missingBlocks} block(s) not captured`);
+    const warning = [
+      header,
+      '',
+      ...detailLines,
+      '',
+      'If you enter an uncaptured exam, review may miss QBank question content and answer keys.',
+      '',
+      'Continue anyway?',
+    ].join('\n');
+    return typeof adapterWindow.confirm === 'function' ? adapterWindow.confirm(warning) : true;
+  }
+
   async function refreshQBankStorageSummary(sourceAttempts = attempts) {
     const listed = Array.isArray(sourceAttempts) && sourceAttempts.length
       ? sourceAttempts
       : await storage.listAttempts({ includeInProgress: true });
-    qbankStorageSummary = summarizeQBankCaptureStorage(listed, readLaunchQBankDefinitions());
+    qbankStorageSummary = summarizeQBankCaptureStorage(listed, readLaunchQBankDefinitions(), getSelectedQBankStepKeys());
     renderQBankStorageSummary(qbankStorageSummary);
     return qbankStorageSummary;
   }
@@ -1269,7 +1489,7 @@ function createLaunchHistory(options = {}) {
       }
       attempts = Array.isArray(listed) ? listed : [];
       renderAttempts();
-      qbankStorageSummary = summarizeQBankCaptureStorage(attempts, readLaunchQBankDefinitions());
+      qbankStorageSummary = summarizeQBankCaptureStorage(attempts, readLaunchQBankDefinitions(), getSelectedQBankStepKeys());
       renderQBankStorageSummary(qbankStorageSummary);
       setMessage(dom.message, attempts.length ? `${attempts.length} attempts loaded.` : 'No attempts stored yet.', attempts.length ? 'info' : 'warning');
       return attempts;
@@ -1380,7 +1600,7 @@ function createLaunchHistory(options = {}) {
         qbankCache.reset();
       }
       attempts = [];
-      qbankStorageSummary = summarizeQBankCaptureStorage([], readLaunchQBankDefinitions());
+      qbankStorageSummary = summarizeQBankCaptureStorage([], readLaunchQBankDefinitions(), getSelectedQBankStepKeys());
       renderAttempts();
       renderQBankStorageSummary(qbankStorageSummary);
       dom.importInput.value = '';
@@ -1463,19 +1683,26 @@ function createLaunchHistory(options = {}) {
       setMessage(dom.qbankMessage, 'QBank capture unavailable on this page.', 'error');
       return null;
     }
+    const selectedStepKeys = getSelectedQBankStepKeys();
+    if (!selectedStepKeys.length) {
+      setMessage(dom.qbankMessage, 'Select at least one QBank step to capture.', 'warning');
+      return null;
+    }
+    const selectedStepLabel = selectedStepKeys.map(formatQBankStepLabel).join(', ');
     const summary = await refreshQBankStorageSummary();
     const warning = summary.complete
       ? [
-        'QBank capture already appears complete in local storage.',
+        `QBank capture already appears complete for ${selectedStepLabel}.`,
         '',
         `${summary.completeCount}/${summary.expectedCount} blocks complete, ${summary.storedQuestions} questions, ${summary.knownAnswers} answer keys.`,
-        'Capturing again is unnecessary and will replace existing QBank cache attempts.',
+        'Capturing again is unnecessary and will replace existing QBank cache attempts for selected steps.',
         '',
         'Continue anyway?',
       ].join('\n')
       : [
-        'Capture all available NBME/Free120 MCQ blocks into local IndexedDB?',
+        `Capture selected NBME/Free120 MCQ blocks into local IndexedDB?`,
         '',
+        `Selected: ${selectedStepLabel}.`,
         'This creates local review-ready cache attempts with rendered question snapshots and answer keys.',
         'Keep stored question content private. Do not export or share full backups.',
         '',
@@ -1490,6 +1717,7 @@ function createLaunchHistory(options = {}) {
     setBusy(true);
     try {
       const result = await qbankCache.captureAllAvailable({
+        stepKeys: selectedStepKeys,
         onProgress(progress) {
           const current = coerceNonNegativeInteger(progress && progress.current, 0);
           const total = coerceNonNegativeInteger(progress && progress.total, 0);
@@ -1620,11 +1848,150 @@ function createLaunchHistory(options = {}) {
     }
   }
 
+  function handleQBankStepSelectionChange() {
+    void refreshQBankStorageSummary().catch((error) => {
+      logger.warn('QBank storage summary refresh failed after step selection.', error);
+      renderQBankStorageSummary();
+    });
+  }
+
   function handleImportChange(event) {
     const file = event && event.target && event.target.files ? event.target.files[0] : null;
     if (file) {
       void importHistoryFile(file);
     }
+  }
+
+  async function confirmQBankCaptureForLaunchParams(params) {
+    if (qbankCaptureInProgress) {
+      setQBankLaunchWarningDebug({ reason: 'qbank-capture-in-progress', params: cloneJsonCompatible(params || {}) });
+      return true;
+    }
+    const launchContext = getLaunchContextForQBankWarning();
+    const definitions = launchContext && launchContext.definitions ? launchContext.definitions : [];
+    const definition = findLaunchDefinitionForSessionParams(definitions, params) || createLaunchDefinitionFromSessionParams(params);
+    if (!definition) {
+      setQBankLaunchWarningDebug({ reason: 'no-launch-definition', params: cloneJsonCompatible(params || {}), definitionsCount: definitions.length });
+      return true;
+    }
+    const stepKey = getQBankStepKey(definition) || getQBankStepKey(params);
+    if (!stepKey) {
+      setQBankLaunchWarningDebug({ reason: 'no-step-key', params: cloneJsonCompatible(params || {}), definition: cloneJsonCompatible(definition) });
+      return true;
+    }
+    const listed = await storage.listAttempts({ includeInProgress: true });
+    const incompleteSteps = findIncompleteQBankStepsForDefinitions(listed, [definition]);
+    const confirmed = confirmIncompleteQBankWarning(incompleteSteps, { definition, stepKey });
+    setQBankLaunchWarningDebug({
+      reason: incompleteSteps.length ? 'checked-incomplete' : 'checked-complete',
+      params: cloneJsonCompatible(params || {}),
+      definition: cloneJsonCompatible(definition),
+      stepKey,
+      incompleteSteps: cloneJsonCompatible(incompleteSteps),
+      confirmed,
+      qbankAttemptIds: listed.filter(isQBankCacheAttempt).map((attempt) => attempt.id),
+    });
+    return confirmed;
+  }
+
+  async function warnIncompleteQBankCaptureForExamLaunch(event) {
+    if (destroyed || qbankCaptureInProgress || launchServiceQBankWarningInstalled || !event || event.defaultPrevented) {
+      return;
+    }
+    const launchContext = getLaunchContextForQBankWarning();
+    if (!launchContext || !launchContext.definitions.length) {
+      return;
+    }
+    const launchTarget = event.target && typeof event.target.closest === 'function'
+      ? event.target.closest('button, a, input[type="button"], input[type="submit"], [role="button"]')
+      : null;
+    if (launchTarget && dom.root && typeof dom.root.contains === 'function' && dom.root.contains(launchTarget)) {
+      return;
+    }
+    const targetText = normalizeDisplayText([
+      launchTarget && launchTarget.textContent,
+      launchTarget && launchTarget.value,
+      launchTarget && launchTarget.getAttribute && launchTarget.getAttribute('aria-label'),
+      launchTarget && launchTarget.getAttribute && launchTarget.getAttribute('title'),
+    ].join(' '));
+    const looksLikeLaunch = !launchTarget || /\b(?:launch|start|begin|enter|continue|exam|test)\b/i.test(targetText);
+    if (!looksLikeLaunch) {
+      return;
+    }
+    const listed = await storage.listAttempts({ includeInProgress: true });
+    const incompleteSteps = findIncompleteQBankStepsForDefinitions(listed, launchContext.definitions);
+    if (!incompleteSteps.length) {
+      return;
+    }
+    const confirmed = confirmIncompleteQBankWarning(incompleteSteps);
+    if (!confirmed) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (typeof event.stopImmediatePropagation === 'function') {
+        event.stopImmediatePropagation();
+      }
+      setQBankOpen(true);
+      setMessage(dom.qbankMessage, 'Exam launch paused: capture selected QBank steps first, or continue after accepting warning.', 'warning');
+    }
+  }
+
+  function handlePotentialExamLaunch(_event) {
+    installLaunchServiceQBankWarning();
+  }
+
+  function installLaunchServiceQBankWarning() {
+    const launchService = findAngularService('launchService');
+    if (!launchService || typeof launchService.createSession !== 'function') {
+      return false;
+    }
+    if (launchService.__free120QBankWarningWrapped && launchService.__free120QBankWarningVersion === QBANK_LAUNCH_WARNING_WRAPPER_VERSION) {
+      launchServiceQBankWarningInstalled = true;
+      return true;
+    }
+    const originalCreateSession = launchService.createSession.__free120OriginalCreateSession || launchService.createSession;
+    const wrappedCreateSession = function createSessionWithQBankWarning(params, ...rest) {
+      return Promise.resolve(confirmQBankCaptureForLaunchParams(params))
+        .then((confirmed) => {
+          if (!confirmed) {
+            unblockNativeLaunchPage();
+            if (hasFunction(adapterWindow, 'setTimeout')) {
+              adapterWindow.setTimeout(unblockNativeLaunchPage, 50);
+            }
+            throw new Error('QBank capture incomplete; exam launch cancelled by user.');
+          }
+          return originalCreateSession.apply(this, [params, ...rest]);
+        });
+    };
+    try {
+      Object.defineProperty(wrappedCreateSession, '__free120OriginalCreateSession', { value: originalCreateSession, configurable: true });
+      Object.defineProperty(wrappedCreateSession, '__free120QBankWarningVersion', { value: QBANK_LAUNCH_WARNING_WRAPPER_VERSION, configurable: true });
+      Object.defineProperty(launchService, '__free120QBankWarningWrapped', { value: true, configurable: true });
+      Object.defineProperty(launchService, '__free120QBankWarningVersion', { value: QBANK_LAUNCH_WARNING_WRAPPER_VERSION, configurable: true });
+      launchService.createSession = wrappedCreateSession;
+      launchServiceQBankWarningInstalled = true;
+      setQBankLaunchWarningDebug({ reason: 'wrapper-installed' });
+      return true;
+    } catch (error) {
+      logger.warn('Could not install QBank launch warning wrapper.', error);
+      return false;
+    }
+  }
+
+  function scheduleLaunchServiceQBankWarningInstall() {
+    if (launchServiceQBankWarningInstalled || destroyed) {
+      return;
+    }
+    if (installLaunchServiceQBankWarning()) {
+      return;
+    }
+    if (!hasFunction(adapterWindow, 'setTimeout')) {
+      return;
+    }
+    launchServiceQBankWarningRetryCount += 1;
+    if (launchServiceQBankWarningRetryCount > 60) {
+      return;
+    }
+    launchServiceQBankWarningRetryTimer = adapterWindow.setTimeout(scheduleLaunchServiceQBankWarningInstall, 500);
   }
 
   function handleBackdropClick() {
@@ -1647,8 +2014,14 @@ function createLaunchHistory(options = {}) {
     dom.backdrop.addEventListener('click', handleBackdropClick);
     dom.panel.addEventListener('click', handlePanelClick);
     dom.qbankPanel.addEventListener('click', handleQBankPanelClick);
+    if (dom.qbankStepList && typeof dom.qbankStepList.addEventListener === 'function') {
+      dom.qbankStepList.addEventListener('change', handleQBankStepSelectionChange);
+    }
     dom.importInput.addEventListener('change', handleImportChange);
+    adapterDocument.addEventListener('click', handlePotentialExamLaunch, true);
+    adapterDocument.addEventListener('submit', handlePotentialExamLaunch, true);
     adapterDocument.addEventListener('keydown', handleKeyDown, true);
+    scheduleLaunchServiceQBankWarningInstall();
     void refreshAttempts().catch(() => {});
   }
 
@@ -1663,8 +2036,17 @@ function createLaunchHistory(options = {}) {
     dom.backdrop.removeEventListener('click', handleBackdropClick);
     dom.panel.removeEventListener('click', handlePanelClick);
     dom.qbankPanel.removeEventListener('click', handleQBankPanelClick);
+    if (dom.qbankStepList && typeof dom.qbankStepList.removeEventListener === 'function') {
+      dom.qbankStepList.removeEventListener('change', handleQBankStepSelectionChange);
+    }
     dom.importInput.removeEventListener('change', handleImportChange);
+    adapterDocument.removeEventListener('click', handlePotentialExamLaunch, true);
+    adapterDocument.removeEventListener('submit', handlePotentialExamLaunch, true);
     adapterDocument.removeEventListener('keydown', handleKeyDown, true);
+    if (launchServiceQBankWarningRetryTimer !== null && hasFunction(adapterWindow, 'clearTimeout')) {
+      adapterWindow.clearTimeout(launchServiceQBankWarningRetryTimer);
+      launchServiceQBankWarningRetryTimer = null;
+    }
     if (dom.root.parentNode) {
       dom.root.parentNode.removeChild(dom.root);
     }
@@ -1702,5 +2084,8 @@ export {
   canOpenReviewFromHistory,
   summarizeQBankCaptureStorage,
   formatQBankStorageStatus,
+  findIncompleteQBankStepsForDefinitions,
+  findLaunchDefinitionForSessionParams,
+  createLaunchDefinitionFromSessionParams,
   createLaunchHistory,
 };

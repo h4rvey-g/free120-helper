@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
-import { buildQBankSnapshotsFromSessionData, createQBankCacheAttemptId, isQuestionBlockDefinition, QBANK_CACHE_ATTEMPT_PREFIX } from '../src/qbank/cache-controller.js';
+import {
+  buildQBankSnapshotsFromSessionData,
+  createQBankCacheAttemptId,
+  filterQBankDefinitionsByStep,
+  getQBankStepKey,
+  isQuestionBlockDefinition,
+  normalizeQBankStepSelection,
+  discoverLaunchQuestionDefinitions,
+  QBANK_CACHE_ATTEMPT_PREFIX,
+} from '../src/qbank/cache-controller.js';
 import { loadQBankCaptureContext, resolveQBankCaptureForItems, loadQBankSnapshotsForAttempt } from '../src/qbank/cache-lookup.js';
 import { fetchResourceDataByUrl } from '../src/media/resource-cache.js';
-import { formatQBankStorageStatus, summarizeQBankCaptureStorage } from '../src/ui/launch-history.js';
+import { createLaunchDefinitionFromSessionParams, findIncompleteQBankStepsForDefinitions, findLaunchDefinitionForSessionParams, formatQBankStorageStatus, summarizeQBankCaptureStorage } from '../src/ui/launch-history.js';
 import { el } from './test-utils/fake-dom.mjs';
 
 assert.equal(QBANK_CACHE_ATTEMPT_PREFIX, 'qbank-cache');
@@ -17,6 +26,30 @@ assert.equal(createQBankCacheAttemptId({
   examName: 'STPF1',
   testDefinitionName: 'STPF1C0137',
 }), 'qbank-cache:USMLE:STPF1:STPF1C0137');
+assert.equal(getQBankStepKey({ program: 'USMLE', examName: 'STPF2', testDefinitionDisplayName: 'Block 1' }), 'step2');
+assert.deepEqual(normalizeQBankStepSelection(null), ['step1', 'step2', 'step3']);
+assert.deepEqual(normalizeQBankStepSelection(['Step 1', 'STPF2', 'step3']), ['step1', 'step2', 'step3']);
+const stepDefinitions = [
+  Object.freeze({ program: 'USMLE', examName: 'STPF1', testDefinitionName: 'STPF1C0137', testDefinitionDisplayName: 'Step 1 Block 1' }),
+  Object.freeze({ program: 'USMLE', examName: 'STPF2', testDefinitionName: 'STPF2C0137', testDefinitionDisplayName: 'Step 2 CK Block 1' }),
+  Object.freeze({ program: 'USMLE', examName: 'STPF3', testDefinitionName: 'STPF3C0137', testDefinitionDisplayName: 'Step 3 Block 1' }),
+];
+assert.deepEqual(filterQBankDefinitionsByStep(stepDefinitions, ['step2']).map((definition) => definition.examName), ['STPF2']);
+assert.equal(findLaunchDefinitionForSessionParams(stepDefinitions, { examName: 'STPF3' })?.testDefinitionName, 'STPF3C0137');
+assert.equal(findLaunchDefinitionForSessionParams(stepDefinitions, { testDefinition: 'STPF2C0137' })?.examName, 'STPF2');
+assert.equal(createLaunchDefinitionFromSessionParams({ programName: 'USMLE', examName: 'STPF2', testDefinition: 'STPF2C0137' })?.examName, 'STPF2');
+assert.equal(getQBankStepKey(createLaunchDefinitionFromSessionParams({ programName: 'USMLE', examName: 'STPF2', testDefinition: 'STPF2C0137' })), 'step2');
+
+const launchScope = { programs: { name: 'USMLE', exams: [
+  { name: 'STPF1', examPublications: [{ publicationName: 'P1', testDefinitions: [{ name: 'STPF1C0137', displayName: 'Step 1 Block 1' }] }] },
+] } };
+const launchChild = el('main', { 'ng-controller': 'launch' }, []);
+const launchBody = el('body', {}, [launchChild]);
+const launchDocument = { querySelectorAll: (selector) => launchBody.querySelectorAll(selector), querySelector: (selector) => launchBody.querySelector(selector) };
+const launchContext = discoverLaunchQuestionDefinitions({
+  angular: { element(node) { return { scope: () => (node === launchChild ? launchScope : {}), injector: () => ({ get: () => ({}) }) }; } },
+}, launchDocument);
+assert.equal(launchContext.definitions.length, 1, 'launch definition discovery scans child ng-controller scopes before body fallback');
 
 const qbankStorageSummary = summarizeQBankCaptureStorage([
   Object.freeze({
@@ -35,6 +68,32 @@ assert.equal(qbankStorageSummary.expectedCount, 1);
 assert.equal(qbankStorageSummary.storedQuestions, 2);
 assert.equal(qbankStorageSummary.knownAnswers, 2);
 assert.equal(formatQBankStorageStatus(qbankStorageSummary), 'Complete');
+const selectedStepSummary = summarizeQBankCaptureStorage([
+  Object.freeze({
+    id: 'qbank-cache:USMLE:STPF2:STPF2C0137',
+    status: 'completed',
+    reviewReady: true,
+    questionIds: Object.freeze(['cache-step2-q1']),
+    questionCount: 1,
+    correctAnswers: Object.freeze({ 'cache-step2-q1': 'A' }),
+    source: Object.freeze({ cacheKind: 'qbank', launchDefinition: stepDefinitions[1] }),
+  }),
+], stepDefinitions, ['step2']);
+assert.equal(selectedStepSummary.complete, true);
+assert.equal(selectedStepSummary.expectedCount, 1);
+assert.deepEqual(selectedStepSummary.selectedStepKeys, ['step2']);
+const incompleteSteps = findIncompleteQBankStepsForDefinitions([
+  Object.freeze({
+    id: 'qbank-cache:USMLE:STPF1:STPF1C0137',
+    status: 'completed',
+    reviewReady: true,
+    questionIds: Object.freeze(['cache-step1-q1']),
+    questionCount: 1,
+    correctAnswers: Object.freeze({ 'cache-step1-q1': 'A' }),
+    source: Object.freeze({ cacheKind: 'qbank', launchDefinition: stepDefinitions[0] }),
+  }),
+], stepDefinitions);
+assert.deepEqual(incompleteSteps.map((entry) => [entry.key, entry.missingBlocks]), [['step2', 1], ['step3', 1]]);
 const incompleteQBankStorageSummary = summarizeQBankCaptureStorage([
   Object.freeze({
     id: 'qbank-cache:USMLE:STPF1:STPF1C0137',

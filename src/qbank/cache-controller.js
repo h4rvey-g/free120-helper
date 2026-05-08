@@ -14,6 +14,96 @@ const QBANK_CAPTURE_STATUS = Object.freeze({
   FAILED: 'failed',
 });
 
+const QBANK_CAPTURE_STEP_OPTIONS = Object.freeze([
+  Object.freeze({ key: 'step1', label: 'Step 1' }),
+  Object.freeze({ key: 'step2', label: 'Step 2 CK' }),
+  Object.freeze({ key: 'step3', label: 'Step 3' }),
+]);
+const QBANK_CAPTURE_STEP_KEYS = Object.freeze(QBANK_CAPTURE_STEP_OPTIONS.map((option) => option.key));
+
+function normalizeQBankStepKey(value) {
+  const text = normalizeString(value, '').toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const compact = text.replace(/\s+/g, '');
+  if (!text) {
+    return '';
+  }
+  if (/^(?:1|step1|stpf1)$/.test(compact) || /\bstep\s*1\b/.test(text) || /\bstpf\s*1(?:\b|[a-z])/.test(text)) {
+    return 'step1';
+  }
+  if (/^(?:2|step2|step2ck|stpf2)$/.test(compact) || /\bstep\s*2(?:\s*ck)?\b/.test(text) || /\bstpf\s*2(?:\b|[a-z])/.test(text)) {
+    return 'step2';
+  }
+  if (/^(?:3|step3|stpf3)$/.test(compact) || /\bstep\s*3\b/.test(text) || /\bstpf\s*3(?:\b|[a-z])/.test(text)) {
+    return 'step3';
+  }
+  return '';
+}
+
+function getQBankStepKey(source) {
+  const direct = normalizeQBankStepKey(source);
+  if (direct) {
+    return direct;
+  }
+  const record = source && typeof source === 'object' ? source : {};
+  return normalizeQBankStepKey([
+    record.qbankStepKey,
+    record.stepKey,
+    record.step,
+    record.program && !/^USMLE$/i.test(normalizeString(record.program, '')) ? record.program : '',
+    record.programName && !/^USMLE$/i.test(normalizeString(record.programName, '')) ? record.programName : '',
+    record.examName,
+    record.examDisplayName,
+    record.displayName,
+    record.section,
+    record.testDefinitionDisplayName,
+    record.testDefinitionName,
+    record.publicationName,
+  ].join(' '));
+}
+
+function formatQBankStepLabel(stepKey) {
+  const key = normalizeQBankStepKey(stepKey);
+  const option = QBANK_CAPTURE_STEP_OPTIONS.find((entry) => entry.key === key);
+  return option ? option.label : normalizeString(stepKey, 'Step');
+}
+
+function normalizeQBankStepSelection(values, options = {}) {
+  const supplied = values !== undefined && values !== null;
+  let rawValues = [];
+  if (Array.isArray(values)) {
+    rawValues = values;
+  } else if (values && typeof values === 'object') {
+    rawValues = Object.entries(values)
+      .filter(([, selected]) => Boolean(selected))
+      .map(([key]) => key);
+  } else if (supplied) {
+    rawValues = [values];
+  }
+  const selected = uniqueNormalizedStrings(rawValues.map(normalizeQBankStepKey).filter(Boolean));
+  if (selected.length) {
+    return selected;
+  }
+  return !supplied && options.defaultAll !== false ? QBANK_CAPTURE_STEP_KEYS.slice() : [];
+}
+
+function filterQBankDefinitionsByStep(definitions, selectedStepKeys) {
+  const sourceDefinitions = Array.isArray(definitions) ? definitions : [];
+  const selected = normalizeQBankStepSelection(selectedStepKeys, { defaultAll: true });
+  if (!selected.length) {
+    return [];
+  }
+  const allKnownStepsSelected = QBANK_CAPTURE_STEP_KEYS.every((key) => selected.includes(key));
+  if (allKnownStepsSelected) {
+    return sourceDefinitions.slice();
+  }
+  return sourceDefinitions.filter((definition) => selected.includes(getQBankStepKey(definition)));
+}
+
+function formatQBankStepSelection(selectedStepKeys) {
+  const selected = normalizeQBankStepSelection(selectedStepKeys, { defaultAll: true });
+  return selected.map(formatQBankStepLabel).join(', ');
+}
+
 function stableHashString(value) {
   const text = normalizeString(value, '');
   let hash = 2166136261;
@@ -59,13 +149,25 @@ function parseBlockNumber(value, fallback = 1) {
 
 function discoverLaunchQuestionDefinitions(adapterWindow = window, adapterDocument = document) {
   const angularObject = adapterWindow.angular;
-  const root = adapterDocument.querySelector('[ng-controller], [ng-app], body');
-  if (!angularObject || !root) {
+  const roots = Array.from(adapterDocument.querySelectorAll('[ng-controller], [ng-app], body'));
+  if (!angularObject || !roots.length) {
     throw new Error('NBME launch Angular scope unavailable. Wait for page load and retry.');
   }
-  const element = angularObject.element(root);
-  const scope = element && typeof element.scope === 'function' ? element.scope() : null;
-  const injector = element && typeof element.injector === 'function' ? element.injector() : null;
+  let scope = null;
+  let injector = null;
+  for (const root of roots) {
+    const element = angularObject.element(root);
+    const candidateScope = element && typeof element.scope === 'function' ? element.scope() : null;
+    const candidateInjector = element && typeof element.injector === 'function' ? element.injector() : null;
+    if (!injector && candidateInjector) {
+      injector = candidateInjector;
+    }
+    if (candidateScope && candidateScope.programs && Array.isArray(candidateScope.programs.exams)) {
+      scope = candidateScope;
+      injector = candidateInjector || injector;
+      break;
+    }
+  }
   const programs = scope && scope.programs ? scope.programs : null;
   if (!programs || !Array.isArray(programs.exams) || !injector) {
     throw new Error('NBME launch metadata unavailable.');
@@ -329,12 +431,21 @@ function createQBankCacheController(options = {}) {
     const startedAt = nowIso();
     status = QBANK_CAPTURE_STATUS.RUNNING;
     const launchContext = discoverLaunchQuestionDefinitions(adapterWindow, adapterDocument);
-    const definitions = launchContext.definitions;
+    const allDefinitions = launchContext.definitions;
+    const rawStepSelection = captureOptions.stepKeys !== undefined
+      ? captureOptions.stepKeys
+      : (captureOptions.steps !== undefined ? captureOptions.steps : captureOptions.selectedStepKeys);
+    const selectedStepKeys = normalizeQBankStepSelection(rawStepSelection, { defaultAll: true });
+    const definitions = filterQBankDefinitionsByStep(allDefinitions, selectedStepKeys);
     const results = [];
     const errors = [];
-    if (!definitions.length) {
+    if (!allDefinitions.length) {
       status = QBANK_CAPTURE_STATUS.FAILED;
       throw new Error('No MCQ block launch definitions found.');
+    }
+    if (!definitions.length) {
+      status = QBANK_CAPTURE_STATUS.FAILED;
+      throw new Error(`No MCQ block launch definitions found for selected QBank steps: ${formatQBankStepSelection(selectedStepKeys) || 'none'}.`);
     }
     for (let index = 0; index < definitions.length; index += 1) {
       const definition = definitions[index];
@@ -349,7 +460,7 @@ function createQBankCacheController(options = {}) {
       }
     }
     status = errors.length ? (results.length ? QBANK_CAPTURE_STATUS.PARTIAL : QBANK_CAPTURE_STATUS.FAILED) : QBANK_CAPTURE_STATUS.COMPLETE;
-    lastResult = Object.freeze({ status, startedAt, completedAt: nowIso(), definitionsCount: definitions.length, capturedDefinitions: results.length, failedDefinitions: errors.length, questionCount: results.reduce((sum, result) => sum + result.questionCount, 0), knownAnswerCount: results.reduce((sum, result) => sum + result.knownAnswerCount, 0), results: Object.freeze(results), errors: Object.freeze(errors) });
+    lastResult = Object.freeze({ status, startedAt, completedAt: nowIso(), definitionsCount: definitions.length, availableDefinitionsCount: allDefinitions.length, selectedStepKeys: Object.freeze(selectedStepKeys.slice()), capturedDefinitions: results.length, failedDefinitions: errors.length, questionCount: results.reduce((sum, result) => sum + result.questionCount, 0), knownAnswerCount: results.reduce((sum, result) => sum + result.knownAnswerCount, 0), results: Object.freeze(results), errors: Object.freeze(errors) });
     return lastResult;
   }
 
@@ -364,15 +475,22 @@ function createQBankCacheController(options = {}) {
     reset,
     getStatus() { return status; },
     getLastResult() { return lastResult; },
-    constants: Object.freeze({ status: QBANK_CAPTURE_STATUS, attemptPrefix: QBANK_CACHE_ATTEMPT_PREFIX }),
+    constants: Object.freeze({ status: QBANK_CAPTURE_STATUS, attemptPrefix: QBANK_CACHE_ATTEMPT_PREFIX, steps: QBANK_CAPTURE_STEP_OPTIONS }),
   });
 }
 
 export {
   QBANK_CACHE_ATTEMPT_PREFIX,
   QBANK_CAPTURE_STATUS,
+  QBANK_CAPTURE_STEP_OPTIONS,
+  QBANK_CAPTURE_STEP_KEYS,
   createQBankCacheAttemptId,
   isQuestionBlockDefinition,
+  normalizeQBankStepKey,
+  getQBankStepKey,
+  formatQBankStepLabel,
+  normalizeQBankStepSelection,
+  filterQBankDefinitionsByStep,
   discoverLaunchQuestionDefinitions,
   buildQBankSnapshotsFromSessionData,
   createQBankCacheController,
