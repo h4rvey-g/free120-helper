@@ -449,6 +449,11 @@ function mergeSnapshotChoicesWithSelection(targetChoices, selectedAnswerId) {
   })));
 }
 
+function snapshotBelongsToTrackingAttempt(attempt, snapshot) {
+  const attemptId = normalizeString(attempt && attempt.id, '');
+  return Boolean(attemptId && normalizeString(snapshot && snapshot.attemptId, '') === attemptId);
+}
+
 function mergeQBankSnapshotWithOwnSnapshot(qbankSnapshot, ownSnapshot = null, attempt = null) {
   if (!ownSnapshot) {
     return qbankSnapshot;
@@ -456,9 +461,12 @@ function mergeQBankSnapshotWithOwnSnapshot(qbankSnapshot, ownSnapshot = null, at
   const questionId = normalizeString(qbankSnapshot && qbankSnapshot.questionId, normalizeString(ownSnapshot && ownSnapshot.questionId, ''));
   const responses = attempt && attempt.responses && typeof attempt.responses === 'object' ? attempt.responses : {};
   const responseRecorded = Object.prototype.hasOwnProperty.call(responses, questionId);
+  const snapshotSelectedAnswerId = snapshotBelongsToTrackingAttempt(attempt, ownSnapshot)
+    ? normalizeString(ownSnapshot && ownSnapshot.selectedAnswerId, '')
+    : mapSelectedAnswerIdForSnapshot(ownSnapshot, qbankSnapshot);
   const selectedAnswerId = responseRecorded
     ? normalizeString(responses[questionId], '')
-    : (mapSelectedAnswerIdForSnapshot(ownSnapshot, qbankSnapshot) || normalizeString(qbankSnapshot && qbankSnapshot.selectedAnswerId, ''));
+    : (snapshotSelectedAnswerId || normalizeString(qbankSnapshot && qbankSnapshot.selectedAnswerId, ''));
   return Object.freeze({
     ...qbankSnapshot,
     selectedAnswerId,

@@ -415,12 +415,26 @@ function getTrackingResponseAliasForItem(responseAliases, item) {
   return normalizeString(byComponent[trackingComponentKey(item)], normalizeString(byPosition[trackingPositionKey(item)], ''));
 }
 
+function isQuestionAnsweredByProgress(attempt, questionId) {
+  const source = isPlainObject(attempt && attempt.source) ? attempt.source : {};
+  const progress = isPlainObject(source.progress) ? source.progress : {};
+  const byBlock = isPlainObject(progress.byBlock) ? progress.byBlock : {};
+  return Object.values(byBlock).some((blockProgress) => (
+    Array.isArray(blockProgress && blockProgress.answeredQuestionIds)
+      && blockProgress.answeredQuestionIds.map((entry) => normalizeString(entry, '')).includes(questionId)
+  ));
+}
+
 function fillScopedResponsesFromAliases(responses, itemList, responseAliases, options = {}) {
   const draft = { ...(isPlainObject(responses) ? responses : {}) };
   const skipQuestionIds = new Set(Array.isArray(options.skipQuestionIds) ? options.skipQuestionIds : []);
+  const sourceAttempt = options.sourceAttempt || null;
   (Array.isArray(itemList) ? itemList : []).forEach((item) => {
     const questionId = normalizeString(item && item.questionId, '');
     if (!questionId || skipQuestionIds.has(questionId) || normalizeString(draft[questionId], '')) {
+      return;
+    }
+    if (sourceAttempt && !isQuestionAnsweredByProgress(sourceAttempt, questionId)) {
       return;
     }
     const aliasAnswerId = getTrackingResponseAliasForItem(responseAliases, item);
@@ -552,7 +566,7 @@ function collectTrackingAnswerEntries(adapterState, itemList, currentChoices = [
     const choicesForItem = isCurrent ? currentChoices : [];
     const answerKnownFromMap = Object.prototype.hasOwnProperty.call(answers, item.questionId);
     const answerKnownFromCurrentChoices = isCurrent && Array.isArray(choicesForItem) && choicesForItem.length > 0;
-    const answerKnownFromItem = Boolean(item.selectedAnswerId);
+    const answerKnownFromItem = Boolean(item.selectedAnswerId && item.answered !== false);
     const answerId = getTrackingSelectedAnswerId(item.questionId, item, adapterState, choicesForItem);
     entries.set(item.questionId, Object.freeze({
       item,
@@ -1098,6 +1112,7 @@ function buildTrackingAttemptPatch(existingAttempt, adapterState, itemList, curr
   const aliasFilledResponses = scopedQuestionSet
     ? fillScopedResponsesFromAliases(mappedExistingResponses, itemList, normalizeTrackingResponseAliases(existingSource), {
         skipQuestionIds: mergeResult.emptyKnownQuestionIds,
+        sourceAttempt: existingAttempt,
       })
     : existingResponses;
   const responses = scopedQuestionSet ? filterRecordToQuestionIds(aliasFilledResponses, questionIds) : existingResponses;

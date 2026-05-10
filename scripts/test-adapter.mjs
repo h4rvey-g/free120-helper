@@ -503,6 +503,62 @@ assert.deepEqual(valueOnlyState.answers, {}, 'Angular item value fields are meta
 assert.equal(valueOnlyState.currentItem.selectedAnswerId, '', 'current item without selected response stays unanswered');
 assert.equal(valueOnlyState.itemList.some((entry) => entry.selectedAnswerId), false, 'value-only item list does not mark review items answered');
 
+const falseAnsweredAngularItems = Array.from({ length: 40 }, (_entry, index) => ({
+  questionId: `false-answered-q${index + 1}`,
+  componentId: `false-answered-component-${index + 1}`,
+  medleyId: 'false-answered-medley',
+  itemIndex: index + 1,
+  selectedAnswerId: index === 5 ? 'B' : (index === 39 ? 'A' : ''),
+  answered: index < 5,
+}));
+falseAnsweredAngularItems[0].selectedAnswerId = 'A';
+falseAnsweredAngularItems[1].selectedAnswerId = 'A';
+falseAnsweredAngularItems[2].selectedAnswerId = 'A';
+falseAnsweredAngularItems[3].selectedAnswerId = 'A';
+falseAnsweredAngularItems[4].selectedAnswerId = 'B';
+const falseAnsweredRows = el('ol', { class: 'options' }, [
+  el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'false-answered-q5', value: 'A' }), el('span', {}, ['Synthetic A'])]),
+  el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'false-answered-q5', value: 'B', checked: true }), el('span', {}, ['Synthetic B'])]),
+]);
+const falseAnsweredBody = el('main', {}, [
+  el('nav', {}, [el('ol', { id: 'leftnav' }, Array.from({ length: 40 }, (_entry, index) => el(
+    'li',
+    index === 4 ? { class: 'currentitem answered', 'aria-current': 'true' } : (index < 4 ? { class: 'answered' } : {}),
+    [el('span', { class: `ans_status ${index < 5 ? 'answered' : ''}` }), el('span', { class: 'index' }, [String(index + 1)])]
+  )))]),
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'false-answered-medley', 'data-medley-id': 'false-answered-medley' }, [
+    el('div', { id: 'false-answered-q5', 'data-component-id': 'false-answered-component-5', 'data-item-index': '5' }, [
+      el('div', { class: 'NBExposition' }, ['False answered current stem']),
+      el('div', { id: 'false-answered-q5_div', class: 'NBOptionListComp answerbox' }, [falseAnsweredRows]),
+    ]),
+  ])])]),
+  el('div', {}, ['Block 1 of 1']),
+]);
+const falseAnsweredDocument = createFakeDocument(falseAnsweredBody, { title: 'Synthetic Step 1 Free 120' });
+const falseAnsweredWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%201');
+falseAnsweredWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'ExamService',
+      get: () => ({
+        state: {
+          currentBlock: 1,
+          blockCount: 1,
+          itemCount: 40,
+          itemList: falseAnsweredAngularItems,
+          currentItem: falseAnsweredAngularItems[4],
+        },
+      }),
+    }),
+  }),
+};
+const falseAnsweredState = createWebfredSiteAdapter({ window: falseAnsweredWindow, document: falseAnsweredDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.equal(falseAnsweredState.answers[falseAnsweredState.itemList[4].questionId], 'B', 'answered Angular item keeps selected response');
+assert.equal(falseAnsweredState.answers[falseAnsweredState.itemList[5].questionId], undefined, 'answered=false blocks stale selected response for Q6');
+assert.equal(falseAnsweredState.answers[falseAnsweredState.itemList[39].questionId], undefined, 'answered=false blocks stale selected response for Q40');
+assert.equal(falseAnsweredState.itemList[5].selectedAnswerId, '', 'Q6 stale selectedAnswerId is cleared when Angular says unanswered');
+assert.equal(falseAnsweredState.itemList[39].selectedAnswerId, '', 'Q40 stale selectedAnswerId is cleared when Angular says unanswered');
+
 const adapterState = createSyntheticAdapterState();
 assert.deepEqual(snapshotForAttemptPosition(adapterState), {
   questionId: 'q1',
@@ -926,6 +982,11 @@ const aliasRecoveredPatch = buildTrackingAttemptPatch(
     questionCount: 3,
     responses: { 'new-b2-q3': 'C' },
     source: Object.freeze({
+      progress: Object.freeze({
+        byBlock: Object.freeze({
+          2: Object.freeze({ blockNumber: 2, total: 3, questionIds: rekeyedCurrentBlockItems.map((entry) => entry.questionId), answeredQuestionIds: Object.freeze(['new-b2-q1', 'new-b2-q2', 'new-b2-q3']) }),
+        }),
+      }),
       responseAliases: Object.freeze({
         byPosition: Object.freeze({ '2\u00001': 'A', '2\u00002': 'B' }),
         byComponent: Object.freeze({}),
@@ -954,6 +1015,46 @@ assert.deepEqual(aliasRecoveredPatch.responses, {
   'new-b2-q2': 'B',
   'new-b2-q3': 'C',
 }, 'stored response aliases recover non-current answers when adapter only reports current answer');
+
+const staleAliasNotRecoveredPatch = buildTrackingAttemptPatch(
+  createSyntheticAttempt({
+    id: 'attempt-stale-alias-not-recovered',
+    launchedScope: Object.freeze({ mode: 'test', block: '1' }),
+    questionIds: rekeyedCurrentBlockItems.map((entry) => entry.questionId),
+    questionCount: 3,
+    responses: { 'new-b2-q1': 'A' },
+    source: Object.freeze({
+      progress: Object.freeze({
+        byBlock: Object.freeze({
+          1: Object.freeze({ blockNumber: 1, total: 3, questionIds: rekeyedCurrentBlockItems.map((entry) => entry.questionId), answeredQuestionIds: Object.freeze(['new-b2-q1']) }),
+        }),
+      }),
+      responseAliases: Object.freeze({
+        byPosition: Object.freeze({ '2\u00002': 'B', '2\u00003': 'A' }),
+        byComponent: Object.freeze({}),
+      }),
+      itemMetadataByQuestionId: Object.freeze(Object.fromEntries(rekeyedCurrentBlockItems.map((entry) => [entry.questionId, entry]))),
+    }),
+  }),
+  createSyntheticAdapterState({
+    currentBlock: 2,
+    itemCount: 3,
+    currentItem: Object.freeze({ ...rekeyedCurrentBlockItems[0], selectedAnswerId: 'A', current: true }),
+    itemList: Object.freeze(rekeyedCurrentBlockItems),
+    answers: Object.freeze({ 'new-b2-q1': 'A' }),
+    marks: Object.freeze({}),
+  }),
+  rekeyedCurrentBlockItems,
+  rekeyedCurrentBlockItems[0],
+  { responses: { 'new-b2-q1': 'A' }, changes: [] },
+  {},
+  [],
+  null,
+  'stale-alias-not-recovered'
+);
+assert.deepEqual(staleAliasNotRecoveredPatch.responses, {
+  'new-b2-q1': 'A',
+}, 'stored aliases do not resurrect answers for questions absent from answered progress');
 
 const staleQuestionIdItemList = [
   Object.freeze({ questionId: 'webfred:Step-1:Free-120:Block-1:shared-medley:component-1', componentId: 'component-1', medleyId: 'shared-medley', blockNumber: 2, itemIndex: 1 }),

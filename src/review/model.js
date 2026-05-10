@@ -304,7 +304,30 @@ function parsePositionAliasKey(key) {
   });
 }
 
-function getReviewResponseAliasForQuestion(attempt, questionId, snapshot = null, result = null, fallbackIndex = 0) {
+function isQuestionAnsweredByProgress(attempt, questionId) {
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  const progress = plainObjectOrEmpty(source.progress);
+  const byBlock = plainObjectOrEmpty(progress.byBlock);
+  return Object.values(byBlock).some((blockProgress) => (
+    Array.isArray(blockProgress && blockProgress.answeredQuestionIds)
+      && blockProgress.answeredQuestionIds.map((entry) => normalizeString(entry, '')).includes(questionId)
+  ));
+}
+
+function shouldUseReviewResponseAlias(attempt, questionId) {
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  const progress = plainObjectOrEmpty(source.progress);
+  const byBlock = plainObjectOrEmpty(progress.byBlock);
+  if (Object.keys(byBlock).length) {
+    return isQuestionAnsweredByProgress(attempt, questionId);
+  }
+  return true;
+}
+
+function getReviewResponseAliasForQuestion(attempt, questionId, snapshot = null, result = null, fallbackIndex = 0, options = {}) {
+  if (!shouldUseReviewResponseAlias(attempt, questionId) && !options.ignoreProgress) {
+    return '';
+  }
   const aliases = normalizeResponseAliases(attempt);
   const byComponent = plainObjectOrEmpty(aliases.byComponent);
   const byPosition = plainObjectOrEmpty(aliases.byPosition);
@@ -407,6 +430,40 @@ function normalizeSelectedAnswerIdForReview(snapshot, selectedAnswerId) {
     return normalizeString(matchingChoice.id, normalized);
   }
   return normalized;
+}
+
+function attemptUsesAuthoritativeResponses(attempt) {
+  const source = plainObjectOrEmpty(attempt && attempt.source);
+  const aliases = normalizeResponseAliases(attempt);
+  const progress = plainObjectOrEmpty(source.progress);
+  return normalizeString(source.createdBy, '') === 'tracking-engine'
+    || Boolean(normalizeString(source.trackingEngineStatus, ''))
+    || Boolean(Object.keys(plainObjectOrEmpty(progress.byBlock)).length)
+    || Boolean(Object.keys(plainObjectOrEmpty(aliases.byPosition)).length || Object.keys(plainObjectOrEmpty(aliases.byComponent)).length)
+    || Boolean(Array.isArray(attempt && attempt.answerTimeline) && attempt.answerTimeline.length);
+}
+
+function shouldUseSnapshotSelectionFallback(attempt) {
+  return !attemptUsesAuthoritativeResponses(attempt);
+}
+
+function getReviewSelectionForQuestion(attempt, questionId, snapshot = null, result = null, fallbackIndex = 0) {
+  const responses = plainObjectOrEmpty(attempt && attempt.responses);
+  const responseRecorded = Object.prototype.hasOwnProperty.call(responses, questionId);
+  if (responseRecorded) {
+    return Object.freeze({ recorded: true, selectedAnswerId: normalizeString(responses[questionId], '') });
+  }
+
+  const aliasAnswerId = getReviewResponseAliasForQuestion(attempt, questionId, snapshot, result, fallbackIndex);
+  if (aliasAnswerId) {
+    return Object.freeze({ recorded: true, selectedAnswerId: aliasAnswerId });
+  }
+
+  const fallbackSelectedAnswerId = normalizeString(result && result.selectedAnswerId, normalizeString(snapshot && snapshot.selectedAnswerId, ''));
+  return Object.freeze({
+    recorded: false,
+    selectedAnswerId: shouldUseSnapshotSelectionFallback(attempt) ? fallbackSelectedAnswerId : '',
+  });
 }
 
 function getQuestionTimeline(attempt, questionId) {
@@ -517,16 +574,12 @@ function normalizeSnapshotForReview(snapshot) {
 }
 
 function buildReviewQuestion(attempt, questionId, snapshot, result, candidate = null) {
-  const responses = plainObjectOrEmpty(attempt && attempt.responses);
   const correctAnswers = plainObjectOrEmpty(attempt && attempt.correctAnswers);
   const metadata = getAttemptItemMetadata(attempt, questionId);
   const timing = getQuestionTimingRecord(attempt, questionId);
-  const responseRecorded = Object.prototype.hasOwnProperty.call(responses, questionId);
-  const resultSelectedAnswerId = normalizeString(result && result.selectedAnswerId, '');
-  const rawSelectedAnswerId = responseRecorded
-    ? normalizeString(responses[questionId], '')
-    : (resultSelectedAnswerId || normalizeString(snapshot && snapshot.selectedAnswerId, ''));
-  const selectedAnswerId = responseRecorded && !rawSelectedAnswerId
+  const selection = getReviewSelectionForQuestion(attempt, questionId, snapshot, result, candidate && candidate.attemptIndex);
+  const rawSelectedAnswerId = selection.selectedAnswerId;
+  const selectedAnswerId = selection.recorded && !rawSelectedAnswerId
     ? ''
     : normalizeSelectedAnswerIdForReview(snapshot, rawSelectedAnswerId);
   const correctAnswerId = normalizeString(
@@ -931,11 +984,14 @@ function buildScoringAttemptForReview(sourceAttempt, questionIds, snapshots = []
   const snapshotByQuestionId = buildSnapshotByQuestionId(snapshots);
   const responses = { ...filterRecordToQuestionIds(sourceAttempt && sourceAttempt.responses, ids) };
   const correctAnswers = { ...filterRecordToQuestionIds(sourceAttempt && sourceAttempt.correctAnswers, ids) };
-  allowed.forEach((questionId) => {
+  ids.forEach((questionId, index) => {
     const snapshot = snapshotByQuestionId.get(questionId);
     const responseRecorded = Object.prototype.hasOwnProperty.call(responses, questionId);
     const snapshotSelectedAnswerId = normalizeString(snapshot && snapshot.selectedAnswerId, '');
-    if (!responseRecorded && snapshotSelectedAnswerId) {
+    const aliasAnswerId = responseRecorded ? '' : getReviewResponseAliasForQuestion(sourceAttempt, questionId, snapshot, null, index + 1);
+    if (!responseRecorded && aliasAnswerId) {
+      responses[questionId] = aliasAnswerId;
+    } else if (!responseRecorded && snapshotSelectedAnswerId && shouldUseSnapshotSelectionFallback(sourceAttempt)) {
       responses[questionId] = snapshotSelectedAnswerId;
     }
     if (!normalizeString(correctAnswers[questionId], '') && normalizeString(snapshot && snapshot.correctAnswerId, '')) {

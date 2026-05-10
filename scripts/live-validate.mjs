@@ -3,9 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 
-const mode = process.argv.includes('--mode=full') ? 'full' : 'smoke';
+const modeArg = process.argv.find((arg) => arg.startsWith('--mode='))?.slice('--mode='.length);
+const mode = modeArg || 'step1-block3';
 const target = process.argv.find((arg) => arg.startsWith('--url='))?.slice('--url='.length) || 'https://orientation.nbme.org/Launch/USMLE';
 const timeoutMs = Number(process.argv.find((arg) => arg.startsWith('--timeout-ms='))?.slice('--timeout-ms='.length) || 120000);
+const browserName = process.argv.find((arg) => arg.startsWith('--browser='))?.slice('--browser='.length) || 'msedge';
+const step1Block3Script = 'scripts/live-step1-block3.cjs';
+let scriptRunCounter = 0;
 
 function assert(condition, message) {
   if (!condition) {
@@ -46,13 +50,30 @@ function parseCliJson(stdout) {
   return JSON.parse(candidate);
 }
 
+async function withPlaywrightSession(callback) {
+  const sessionName = `free120-live-${process.pid}-${Date.now()}-${++scriptRunCounter}`;
+  await run('playwright-cli', [`-s=${sessionName}`, 'open', `--browser=${browserName}`, 'about:blank']);
+  try {
+    return await callback(sessionName);
+  } finally {
+    await run('playwright-cli', [`-s=${sessionName}`, 'close']).catch(() => null);
+  }
+}
+
+async function runPlaywrightScriptFile(filename) {
+  const absoluteFilename = filename.startsWith('/') ? filename : join(process.cwd(), filename);
+  return withPlaywrightSession(async (sessionName) => {
+    const result = await run('playwright-cli', [`-s=${sessionName}`, 'run-code', `--filename=${absoluteFilename}`], { env: { FREE120_LIVE_TARGET: target, FREE120_LIVE_MODE: mode } });
+    return parseCliJson(result.stdout);
+  });
+}
+
 async function runPlaywrightScript(source) {
   const dir = await mkdtemp(join(tmpdir(), 'free120-live-'));
   const filename = join(dir, 'script.cjs');
   try {
     await writeFile(filename, source, 'utf8');
-    const result = await run('playwright-cli', ['run-code', `--filename=${filename}`], { env: { FREE120_LIVE_TARGET: target, FREE120_LIVE_MODE: mode } });
-    return parseCliJson(result.stdout);
+    return await runPlaywrightScriptFile(filename);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -61,6 +82,16 @@ async function runPlaywrightScript(source) {
 async function main() {
   const userscript = await readFile('dist/free120-helper.user.js', 'utf8');
   assert(userscript.includes('USMLE Free 120 QBank Helper'), 'dist userscript missing Tampermonkey banner');
+
+  if (mode === 'step1-block3' || mode === 'full') {
+    const step1Block3Validation = await runPlaywrightScriptFile(step1Block3Script);
+    console.log(JSON.stringify({ mode, browser: browserName, step1Block3Validation }, null, 2));
+    return;
+  }
+
+  if (mode !== 'smoke') {
+    throw new Error(`Unknown live validation mode: ${mode}`);
+  }
 
   const launchValidation = await runPlaywrightScript(`async page => {
     const target = ${JSON.stringify(target)};

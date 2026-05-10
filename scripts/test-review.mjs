@@ -238,6 +238,94 @@ const explicitEmptyResponseModel = buildReviewModel(Object.freeze({
 assert.equal(explicitEmptyResponseModel.questions[0].selectedAnswerId, '', 'explicit empty response blocks stale snapshot and alias selection in review');
 assert.equal(explicitEmptyResponseModel.questions[0].status, 'omitted');
 
+const snapshotFallbackModel = buildReviewModel(Object.freeze({
+  id: 'attempt-snapshot-fallback-selection',
+  questionIds: Object.freeze(['snapshot-only-q1']),
+  questionCount: 1,
+  responses: Object.freeze({}),
+}), [Object.freeze({
+  questionId: 'snapshot-only-q1',
+  blockNumber: 1,
+  itemIndex: 1,
+  selectedAnswerId: 'A',
+  choices: Object.freeze([
+    Object.freeze({ id: 'A', label: 'Option A', index: 1, selected: true }),
+    Object.freeze({ id: 'B', label: 'Option B', index: 2, selected: false }),
+  ]),
+})]);
+assert.equal(snapshotFallbackModel.questions[0].selectedAnswerId, 'A', 'non-tracking legacy review can still use snapshot-only selections');
+
+const staleSnapshotSelectionModel = buildReviewModel(Object.freeze({
+  id: 'attempt-tracking-stale-snapshot-selection',
+  status: ATTEMPT_STATUS.COMPLETED,
+  questionIds: Object.freeze(['tracking-q1', 'tracking-q2', 'tracking-q3', 'tracking-q4', 'tracking-q5', 'tracking-q6']),
+  questionCount: 6,
+  responses: Object.freeze({ 'tracking-q1': 'A', 'tracking-q2': 'B', 'tracking-q3': 'C', 'tracking-q4': 'D', 'tracking-q5': 'A' }),
+  correctAnswers: Object.freeze({ 'tracking-q1': 'A', 'tracking-q2': 'B', 'tracking-q3': 'C', 'tracking-q4': 'D', 'tracking-q5': 'A', 'tracking-q6': 'C' }),
+  source: Object.freeze({
+    createdBy: 'tracking-engine',
+    progress: Object.freeze({
+      byBlock: Object.freeze({
+        1: Object.freeze({ blockNumber: 1, total: 6, questionIds: Object.freeze(['tracking-q1', 'tracking-q2', 'tracking-q3', 'tracking-q4', 'tracking-q5', 'tracking-q6']), answeredQuestionIds: Object.freeze(['tracking-q1', 'tracking-q2', 'tracking-q3', 'tracking-q4', 'tracking-q5']) }),
+      }),
+    }),
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries(Array.from({ length: 6 }, (_item, index) => [`tracking-q${index + 1}`, Object.freeze({ questionId: `tracking-q${index + 1}`, blockNumber: 1, itemIndex: index + 1 })]))),
+  }),
+}), [Object.freeze({
+  questionId: 'tracking-q6',
+  blockNumber: 1,
+  itemIndex: 6,
+  selectedAnswerId: 'C',
+  choices: Object.freeze([
+    Object.freeze({ id: 'A', label: 'Option A', index: 1, selected: false }),
+    Object.freeze({ id: 'B', label: 'Option B', index: 2, selected: false }),
+    Object.freeze({ id: 'C', label: 'Option C', index: 3, selected: true }),
+    Object.freeze({ id: 'D', label: 'Option D', index: 4, selected: false }),
+  ]),
+  correctAnswerId: 'C',
+})]);
+const staleSnapshotById = new Map(staleSnapshotSelectionModel.questions.map((question) => [question.questionId, question]));
+assert.equal(staleSnapshotSelectionModel.scoreSummary.answered, 5, 'tracking review does not count stale snapshot-only selections as answers');
+assert.equal(staleSnapshotById.get('tracking-q6').selectedAnswerId, '', 'tracking review ignores stale selectedAnswerId from snapshots without a recorded response or alias');
+assert.equal(staleSnapshotById.get('tracking-q6').status, 'omitted');
+
+const staleAliasSelectionModel = buildReviewModel(Object.freeze({
+  id: 'attempt-tracking-stale-alias-selection',
+  status: ATTEMPT_STATUS.COMPLETED,
+  questionIds: Object.freeze(['alias-q1', 'alias-q2', 'alias-q3', 'alias-q4', 'alias-q5', 'alias-q6', 'alias-q40']),
+  questionCount: 7,
+  responses: Object.freeze({ 'alias-q1': 'A', 'alias-q2': 'A', 'alias-q3': 'A', 'alias-q4': 'A', 'alias-q5': 'B' }),
+  correctAnswers: Object.freeze({ 'alias-q1': 'A', 'alias-q2': 'A', 'alias-q3': 'A', 'alias-q4': 'A', 'alias-q5': 'B', 'alias-q6': 'B', 'alias-q40': 'A' }),
+  source: Object.freeze({
+    createdBy: 'tracking-engine',
+    progress: Object.freeze({
+      byBlock: Object.freeze({
+        1: Object.freeze({ blockNumber: 1, total: 40, questionIds: Object.freeze(['alias-q1', 'alias-q2', 'alias-q3', 'alias-q4', 'alias-q5', 'alias-q6', 'alias-q40']), answeredQuestionIds: Object.freeze(['alias-q1', 'alias-q2', 'alias-q3', 'alias-q4', 'alias-q5']) }),
+      }),
+    }),
+    responseAliases: Object.freeze({
+      byPosition: Object.freeze({ '1\u00006': 'B', '1\u000040': 'A' }),
+      byComponent: Object.freeze({}),
+    }),
+    itemMetadataByQuestionId: Object.freeze({
+      'alias-q1': Object.freeze({ questionId: 'alias-q1', blockNumber: 1, itemIndex: 1 }),
+      'alias-q2': Object.freeze({ questionId: 'alias-q2', blockNumber: 1, itemIndex: 2 }),
+      'alias-q3': Object.freeze({ questionId: 'alias-q3', blockNumber: 1, itemIndex: 3 }),
+      'alias-q4': Object.freeze({ questionId: 'alias-q4', blockNumber: 1, itemIndex: 4 }),
+      'alias-q5': Object.freeze({ questionId: 'alias-q5', blockNumber: 1, itemIndex: 5 }),
+      'alias-q6': Object.freeze({ questionId: 'alias-q6', blockNumber: 1, itemIndex: 6 }),
+      'alias-q40': Object.freeze({ questionId: 'alias-q40', blockNumber: 1, itemIndex: 40 }),
+    }),
+  }),
+}), [
+  Object.freeze({ questionId: 'alias-q6', blockNumber: 1, itemIndex: 6, selectedAnswerId: 'B', choices: Object.freeze([Object.freeze({ id: 'A', index: 1 }), Object.freeze({ id: 'B', index: 2, selected: true })]), correctAnswerId: 'B' }),
+  Object.freeze({ questionId: 'alias-q40', blockNumber: 1, itemIndex: 40, selectedAnswerId: 'A', choices: Object.freeze([Object.freeze({ id: 'A', index: 1, selected: true }), Object.freeze({ id: 'B', index: 2 })]), correctAnswerId: 'A' }),
+]);
+const staleAliasById = new Map(staleAliasSelectionModel.questions.map((question) => [question.questionId, question]));
+assert.equal(staleAliasSelectionModel.scoreSummary.answered, 5, 'tracking review does not count stale aliases outside answered progress');
+assert.equal(staleAliasById.get('alias-q6').selectedAnswerId, '', 'review ignores stale alias for unanswered Q6');
+assert.equal(staleAliasById.get('alias-q40').selectedAnswerId, '', 'review ignores stale alias for unanswered Q40');
+
 const validReviewQuestionIds = Array.from({ length: 40 }, (_item, index) => `valid-q${index + 1}`);
 const noisyAttempt = Object.freeze({
   id: 'attempt-noisy-review',

@@ -1369,7 +1369,9 @@ function normalizeAngularItem(rawItem, options = {}) {
   });
   const selectedAnswerId = normalizeSelectedAnswerIdFromAngularItem(rawItem);
   const marked = normalizeMaybeBoolean(findFirstSemanticValue([rawItem], ['marked', 'isMarked', 'flagged', 'isFlagged', 'mark'], { maxDepth: 2 }));
-  const answered = normalizeMaybeBoolean(findFirstSemanticValue([rawItem], ['answered', 'isAnswered', 'complete', 'isComplete'], { maxDepth: 2 }));
+  const rawAnswered = readCandidateProperty(rawItem, ['answered', 'isAnswered', 'complete', 'isComplete']);
+  const answered = normalizeMaybeBoolean(rawAnswered !== undefined ? rawAnswered : findFirstSemanticValue([rawItem], ['answered', 'isAnswered', 'complete', 'isComplete'], { maxDepth: 2 }));
+  const trustedSelectedAnswerId = answered === false ? '' : selectedAnswerId;
 
   return Object.freeze({
     questionId: identity.questionId,
@@ -1377,9 +1379,9 @@ function normalizeAngularItem(rawItem, options = {}) {
     medleyId: identity.medleyId,
     blockNumber: identity.blockNumber || blockNumber,
     itemIndex: identity.itemIndex || itemIndex,
-    selectedAnswerId,
+    selectedAnswerId: trustedSelectedAnswerId,
     marked: marked === null ? false : marked,
-    answered: answered === null ? Boolean(selectedAnswerId) : answered,
+    answered: answered === null ? Boolean(trustedSelectedAnswerId) : answered,
     current: Boolean(normalizeMaybeBoolean(findFirstSemanticValue([rawItem], ['current', 'isCurrent', 'active', 'isActive', 'selectedItem'], { maxDepth: 2 }))),
     identitySource: identity.identitySource,
     source: WEBFRED_STATE_SOURCE.ANGULAR,
@@ -1554,12 +1556,16 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
     });
   });
 
-  if (currentItem && currentItem.selectedAnswerId) {
+  if (currentItem && currentItem.selectedAnswerId && currentItem.answered !== false) {
     addAnswerMapping(answers, currentItem.questionId, currentItem.selectedAnswerId);
   }
 
   if (!rawAnswers) {
-    itemList.forEach((item) => addAnswerMapping(answers, item.questionId, item.selectedAnswerId));
+    itemList.forEach((item) => {
+      if (item && item.answered !== false) {
+        addAnswerMapping(answers, item.questionId, item.selectedAnswerId);
+      }
+    });
     return Object.freeze(answers);
   }
 
@@ -1580,7 +1586,11 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
       const mappedQuestionId = itemsByQuestionId.get(key) || itemsByCandidateId.get(key) || (numericItem && numericItem.questionId) || (itemList.length <= 1 ? key : '');
       addAnswerMapping(answers, mappedQuestionId, normalizeSelectedAnswerIdFromAnswerRecord(value));
     });
-    itemList.forEach((item) => addAnswerMapping(answers, item.questionId, item.selectedAnswerId));
+    itemList.forEach((item) => {
+      if (item && item.answered !== false) {
+        addAnswerMapping(answers, item.questionId, item.selectedAnswerId);
+      }
+    });
     return Object.freeze(answers);
   }
 
@@ -1602,7 +1612,11 @@ function normalizeAnswersFromAngular(rawAnswers, itemList = [], currentItem = nu
     addAnswerMapping(answers, mappedQuestionId, answerId);
   });
 
-  itemList.forEach((item) => addAnswerMapping(answers, item.questionId, item.selectedAnswerId));
+  itemList.forEach((item) => {
+    if (item && item.answered !== false) {
+      addAnswerMapping(answers, item.questionId, item.selectedAnswerId);
+    }
+  });
   return Object.freeze(answers);
 }
 
@@ -1998,6 +2012,142 @@ function mergeWebfredCapabilities(primary, fallback) {
   });
 }
 
+function itemPositionKey(item) {
+  const blockNumber = coercePositiveInteger(item && item.blockNumber, 0);
+  const itemIndex = coercePositiveInteger(item && item.itemIndex, 0);
+  return blockNumber && itemIndex ? `${blockNumber}\u0000${itemIndex}` : '';
+}
+
+function itemComponentKey(item) {
+  const blockNumber = coercePositiveInteger(item && item.blockNumber, 0);
+  const medleyId = normalizeString(item && item.medleyId, '');
+  const componentId = normalizeString(item && item.componentId, '');
+  return blockNumber && medleyId && componentId ? `${blockNumber}\u0000${medleyId}\u0000${componentId}` : '';
+}
+
+function buildItemLookup(items) {
+  const byQuestionId = new Map();
+  const byPosition = new Map();
+  const byComponent = new Map();
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const questionId = normalizeString(item && item.questionId, '');
+    if (questionId && !byQuestionId.has(questionId)) {
+      byQuestionId.set(questionId, item);
+    }
+    const positionKey = itemPositionKey(item);
+    if (positionKey && !byPosition.has(positionKey)) {
+      byPosition.set(positionKey, item);
+    }
+    const componentKey = itemComponentKey(item);
+    if (componentKey && !byComponent.has(componentKey)) {
+      byComponent.set(componentKey, item);
+    }
+  });
+  return Object.freeze({ byQuestionId, byPosition, byComponent });
+}
+
+function findMatchingItem(item, lookup) {
+  if (!item || !lookup) {
+    return null;
+  }
+  const questionId = normalizeString(item.questionId, '');
+  const componentKey = itemComponentKey(item);
+  const positionKey = itemPositionKey(item);
+  return (questionId && lookup.byQuestionId.get(questionId))
+    || (componentKey && lookup.byComponent.get(componentKey))
+    || (positionKey && lookup.byPosition.get(positionKey))
+    || null;
+}
+
+function getFallbackSelectedAnswerId(primaryItem, fallbackItem, fallbackAnswers) {
+  const answers = fallbackAnswers && typeof fallbackAnswers === 'object' ? fallbackAnswers : {};
+  const primaryQuestionId = normalizeString(primaryItem && primaryItem.questionId, '');
+  const fallbackQuestionId = normalizeString(fallbackItem && fallbackItem.questionId, '');
+  return firstNonEmpty([
+    primaryQuestionId ? answers[primaryQuestionId] : '',
+    fallbackQuestionId ? answers[fallbackQuestionId] : '',
+    fallbackItem && fallbackItem.selectedAnswerId,
+  ]);
+}
+
+function mergeItemListWithFallback(primaryItems, fallbackItems, fallbackAnswers = {}) {
+  const primaryList = Array.isArray(primaryItems) ? primaryItems : [];
+  const fallbackList = Array.isArray(fallbackItems) ? fallbackItems : [];
+  if (!primaryList.length) {
+    return fallbackList;
+  }
+  if (!fallbackList.length) {
+    return primaryList;
+  }
+  const fallbackLookup = buildItemLookup(fallbackList);
+  return primaryList.map((item) => {
+    const fallbackItem = findMatchingItem(item, fallbackLookup);
+    if (!fallbackItem) {
+      return item;
+    }
+    const fallbackSelectedAnswerId = getFallbackSelectedAnswerId(item, fallbackItem, fallbackAnswers);
+    const fallbackSaysUnanswered = !fallbackItem.answered && !fallbackSelectedAnswerId;
+    if (fallbackSaysUnanswered) {
+      return Object.freeze({
+        ...item,
+        selectedAnswerId: '',
+        answered: false,
+        marked: Boolean(item.marked || fallbackItem.marked),
+        current: Boolean(item.current || fallbackItem.current),
+      });
+    }
+    return Object.freeze({
+      ...item,
+      selectedAnswerId: normalizeString(item.selectedAnswerId, fallbackSelectedAnswerId),
+      answered: Boolean(item.answered || fallbackItem.answered || fallbackSelectedAnswerId),
+      marked: Boolean(item.marked || fallbackItem.marked),
+      current: Boolean(item.current || fallbackItem.current),
+    });
+  });
+}
+
+function alignCurrentItemWithItemList(currentItem, itemList) {
+  if (!currentItem || !Array.isArray(itemList) || !itemList.length) {
+    return currentItem || null;
+  }
+  const lookup = buildItemLookup(itemList);
+  const matched = findMatchingItem(currentItem, lookup);
+  if (!matched) {
+    return currentItem;
+  }
+  const currentQuestionId = normalizeString(currentItem.questionId, '');
+  const matchedQuestionId = normalizeString(matched.questionId, '');
+  if (currentQuestionId && !matchedQuestionId) {
+    return Object.freeze({ ...currentItem, current: true });
+  }
+  return Object.freeze({ ...matched, current: true });
+}
+
+function sanitizeAnswersWithFallbackItemList(answers, itemList, fallbackItems, fallbackAnswers = {}) {
+  const draft = { ...(answers && typeof answers === 'object' ? answers : {}) };
+  const fallbackList = Array.isArray(fallbackItems) ? fallbackItems : [];
+  if (!fallbackList.length) {
+    return Object.freeze(draft);
+  }
+  const fallbackLookup = buildItemLookup(fallbackList);
+  (Array.isArray(itemList) ? itemList : []).forEach((item) => {
+    const fallbackItem = findMatchingItem(item, fallbackLookup);
+    if (!fallbackItem) {
+      return;
+    }
+    const fallbackSelectedAnswerId = getFallbackSelectedAnswerId(item, fallbackItem, fallbackAnswers);
+    if (!fallbackItem.answered && !fallbackSelectedAnswerId) {
+      const questionId = normalizeString(item && item.questionId, '');
+      const primaryAnswerId = normalizeString(draft[questionId], '');
+      const primarySelectedAnswerId = normalizeString(item && item.selectedAnswerId, '');
+      if (!primaryAnswerId || (primarySelectedAnswerId && primaryAnswerId === primarySelectedAnswerId)) {
+        delete draft[questionId];
+      }
+    }
+  });
+  return Object.freeze(draft);
+}
+
 function mergeWebfredState(angularState, domState, options = {}) {
   const hasAngular = Boolean(angularState && angularState.capabilities && angularState.capabilities.hasAngularServices);
   const primary = hasAngular ? angularState : domState;
@@ -2009,20 +2159,35 @@ function mergeWebfredState(angularState, domState, options = {}) {
   }
 
   let currentItem = primary.currentItem || (fallback && fallback.currentItem) || null;
-  const itemList = primary.itemList && primary.itemList.length
-    ? primary.itemList
-    : ((fallback && fallback.itemList) || []);
-  const answers = Object.freeze({
-    ...((fallback && fallback.answers) || {}),
+  const fallbackItemList = (fallback && fallback.itemList) || [];
+  const fallbackAnswers = (fallback && fallback.answers) || {};
+  const primaryItemList = primary.itemList && primary.itemList.length ? primary.itemList : fallbackItemList;
+  let itemList = mergeItemListWithFallback(primaryItemList, fallbackItemList, fallbackAnswers);
+  const primaryCurrentQuestionIdForFallbackMerge = normalizeString(primary.currentItem && primary.currentItem.questionId, '');
+  if (primaryCurrentQuestionIdForFallbackMerge && fallback && fallback.currentItem && primaryItemList === fallbackItemList) {
+    const fallbackCurrentQuestionId = normalizeString(fallback.currentItem.questionId, '');
+    itemList = itemList.map((item) => (
+      fallbackCurrentQuestionId && item.questionId === fallbackCurrentQuestionId
+        ? Object.freeze({ ...item, ...fallback.currentItem, current: Boolean(item.current || fallback.currentItem.current) })
+        : item
+    ));
+  }
+  const rawAnswers = Object.freeze({
+    ...fallbackAnswers,
     ...(primary.answers || {}),
   });
+  const answers = sanitizeAnswersWithFallbackItemList(rawAnswers, itemList, fallbackItemList, fallbackAnswers);
   const marks = Object.freeze({
     ...((fallback && fallback.marks) || {}),
     ...(primary.marks || {}),
   });
   const currentContent = chooseCurrentContent(primary.currentContent, fallback && fallback.currentContent);
-  if (currentContent === (fallback && fallback.currentContent) && fallback && fallback.currentItem && contentHasMediaEvidence(fallback.currentContent)) {
+  const shouldPreferFallbackCurrentItem = Boolean(currentContent === (fallback && fallback.currentContent) && fallback && fallback.currentItem && contentHasMediaEvidence(fallback.currentContent));
+  if (shouldPreferFallbackCurrentItem) {
     currentItem = fallback.currentItem;
+  }
+  if (!shouldPreferFallbackCurrentItem) {
+    currentItem = alignCurrentItemWithItemList(currentItem, itemList);
   }
   const primaryTerminal = primary.terminalState || {};
   const fallbackTerminal = fallback && fallback.terminalState ? fallback.terminalState : {};
