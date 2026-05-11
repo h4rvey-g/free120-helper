@@ -1143,7 +1143,12 @@ function buildReviewRuntimeScript(model) {
   }
   function decorateOptionRows(root, question) {
     const rows = qsa('ol.options > li.stContext, li.stContext', root);
-    rows.forEach((row, index) => {
+    const sourceRows = rows.length
+      ? rows
+      : qsa('input.NBOptionInput, input[type="radio"], input[type="checkbox"]', root).map((input) => (
+          input.closest('li, tr, label, .stContext, .NBOptionListComp, .answerbox') || input.parentElement || input
+        ));
+    Array.from(new Set(sourceRows)).forEach((row, index) => {
       const isCorrect = rowMatchesAnswer(row, question, question.correctAnswerId, index);
       const isSelected = rowMatchesAnswer(row, question, question.selectedAnswerId, index);
       let kind = 'empty';
@@ -1171,6 +1176,11 @@ function buildReviewRuntimeScript(model) {
     const options = qs('ol.options', root);
     if (options && options.parentNode) {
       options.insertAdjacentElement('afterend', time);
+      return;
+    }
+    const lastInput = qsa('input.NBOptionInput, input[type="radio"], input[type="checkbox"]', root).at(-1);
+    if (lastInput && lastInput.parentNode) {
+      (lastInput.closest('li, tr, label, .stContext, .NBOptionListComp, .answerbox') || lastInput).insertAdjacentElement('afterend', time);
       return;
     }
     const answerBox = qs('div[id$="_div"].NBOptionListComp.answerbox, .NBOptionListComp.answerbox, .answerbox', root);

@@ -128,6 +128,56 @@ const mediaSiblingState = createWebfredSiteAdapter({ window: mediaSiblingWindow,
 assert.equal(mediaSiblingState.currentContent.resourceUrls[0], 'api/Resource?name=sibling.webm');
 assert.equal(mediaSiblingState.currentItem.componentId, 'component-media', 'merged state prefers DOM identity when DOM content carries associated media');
 
+const realNbmeZeroBasedItems = Array.from({ length: 40 }, (_entry, index) => ({
+  componentId: `real-component-${index + 1}`,
+  medleyId: `real-medley-${index + 1}`,
+  itemIndex: index,
+  displayableName: String(index + 1),
+  complete: index === 0,
+  currentResponse: index === 0 ? 'B' : '',
+}));
+const realNbmeZeroBasedNav = el('nav', {}, [el('ol', { id: 'leftnav' }, Array.from({ length: 41 }, (_entry, index) => (
+  el('li', index === 40 ? { class: 'keyitem' } : (index === 0 ? { class: 'currentitem', 'aria-current': 'true' } : {}), [
+    el('span', { class: `ans_status ${index === 0 ? 'complete' : ''}` }),
+    el('span', { class: 'index' }, [index === 40 ? 'Key' : String(index + 1)]),
+  ])
+)))]);
+const realNbmeZeroBasedBody = el('main', {}, [
+  realNbmeZeroBasedNav,
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'medley', 'data-medley-id': 'real-medley-1' }, [
+    el('div', { id: 'real-item-1', 'data-component-id': 'real-component-1', 'data-item-index': '1' }, [
+      el('div', { class: 'NBExposition' }, ['Real NBME zero-based stem']),
+      el('div', { id: 'real-component-1_div', class: 'NBOptionListComp answerbox' }, [choiceRows]),
+    ]),
+  ])])]),
+  el('div', {}, ['Block 1 of 1']),
+]);
+const realNbmeZeroBasedDocument = createFakeDocument(realNbmeZeroBasedBody, { title: 'NBME Exam Driver' });
+const realNbmeZeroBasedWindow = createFakeWindow('https://orientation.nbme.org/webfred/#!/main');
+realNbmeZeroBasedWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'itemService',
+      get: () => ({
+        items: realNbmeZeroBasedItems,
+        answers: {
+          'real-component-1': { answer: 'B', locked: false, hidden: false },
+          'real-component-2': { answer: '', locked: false, hidden: false },
+        },
+        currItem: { compID: 'real-component-1', medleyId: 'real-medley-1', itemIndex: 0, index: 0, answer: 'B', complete: true },
+        blockInfo: { currentBlock: 1, blockCount: 1, blockMap: [{ name: 'STPF1C0139D1A1', numberOfItems: 40, caption: 'Exam Section' }] },
+        config: { programName: 'USMLE' },
+      }),
+    }),
+  }),
+};
+const realNbmeZeroBasedState = createWebfredSiteAdapter({ window: realNbmeZeroBasedWindow, document: realNbmeZeroBasedDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.equal(realNbmeZeroBasedState.itemList[0].itemIndex, 1, 'real NBME zero-based itemIndex 0 normalizes to review item 1');
+assert.equal(realNbmeZeroBasedState.itemList[1].itemIndex, 2, 'real NBME zero-based itemIndex 1 normalizes to review item 2');
+assert.equal(realNbmeZeroBasedState.currentItem.questionId, realNbmeZeroBasedState.itemList[0].questionId, 'real NBME current item keeps trusted Angular identity');
+assert.equal(realNbmeZeroBasedState.currentItem.selectedAnswerId, 'B', 'real NBME currentResponse is captured as selected answer');
+assert.equal(realNbmeZeroBasedState.answers[realNbmeZeroBasedState.itemList[0].questionId], 'B', 'real NBME answer maps component-key answer object to trusted question id');
+
 const navState = extractNavigationStateFromDom(fakeDocument, fakeWindow);
 assert.equal(navState.currentBlock, 1);
 assert.equal(navState.blockCount, 1);

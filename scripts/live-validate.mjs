@@ -9,6 +9,7 @@ const target = process.argv.find((arg) => arg.startsWith('--url='))?.slice('--ur
 const timeoutMs = Number(process.argv.find((arg) => arg.startsWith('--timeout-ms='))?.slice('--timeout-ms='.length) || 120000);
 const browserName = process.argv.find((arg) => arg.startsWith('--browser='))?.slice('--browser='.length) || 'msedge';
 const step1Block3Script = 'scripts/live-step1-block3.cjs';
+const realStep1Block3Script = 'scripts/live-real-step1-block3.cjs';
 let scriptRunCounter = 0;
 
 function assert(condition, message) {
@@ -86,6 +87,12 @@ async function main() {
   if (mode === 'step1-block3' || mode === 'full') {
     const step1Block3Validation = await runPlaywrightScriptFile(step1Block3Script);
     console.log(JSON.stringify({ mode, browser: browserName, step1Block3Validation }, null, 2));
+    return;
+  }
+
+  if (mode === 'real-step1-block3') {
+    const realStep1Block3Validation = await runPlaywrightScriptFile(realStep1Block3Script);
+    console.log(JSON.stringify({ mode, browser: browserName, realStep1Block3Validation }, null, 2));
     return;
   }
 

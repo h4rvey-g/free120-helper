@@ -12,7 +12,8 @@
     "test:adapter": "node scripts/test-adapter.mjs",
     "test:scoring": "node scripts/test-scoring.mjs",
     "check": "npm run build && node --check dist/free120-helper.user.js && npm test",
-    "live:validate": "node scripts/live-validate.mjs"
+    "live:validate": "node scripts/live-validate.mjs",
+    "live:validate:real": "node scripts/live-validate.mjs --mode=real-step1-block3 --timeout-ms=300000"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

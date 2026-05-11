@@ -401,10 +401,31 @@ function extractChoicesFromDom(root) {
     return [];
   }
 
-  return Array.from(root.querySelectorAll('ol.options > li.stContext, li.stContext'))
-    .map((element, index) => {
-      const input = element.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
-      const label = element.querySelector('span, label') || element;
+  const optionRows = Array.from(root.querySelectorAll('ol.options > li.stContext, li.stContext'));
+  const sourceRows = optionRows.length
+    ? optionRows.map((element) => ({ element, input: element.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]') }))
+    : Array.from(root.querySelectorAll('input.NBOptionInput, input[type="radio"], input[type="checkbox"]')).map((input) => ({
+        input,
+        element: (typeof input.closest === 'function' && input.closest('li, tr, label, .stContext, .NBOptionListComp, .answerbox')) || input.parentElement || input,
+      }));
+  const seen = new Set();
+  return sourceRows
+    .filter(({ input, element }) => {
+      const key = firstNonEmpty([
+        safeAttribute(input, 'name') && safeAttribute(input, 'value') && `${safeAttribute(input, 'name')}:${safeAttribute(input, 'value')}`,
+        safeAttribute(input, 'id'),
+        safeElementText(element),
+      ]);
+      if (key && seen.has(key)) {
+        return false;
+      }
+      if (key) {
+        seen.add(key);
+      }
+      return Boolean(input || element);
+    })
+    .map(({ element, input }, index) => {
+      const label = optionRows.length ? (element.querySelector('span, label') || element) : element;
       const id = firstNonEmpty([
         safeAttribute(input, 'value'),
         safeAttribute(input, 'id'),
@@ -429,7 +450,7 @@ function extractSelectedAnswerIdFromDom(root) {
     return '';
   }
 
-  const selectedInput = root.querySelector('input.NBOptionInput:checked, ol.options input[type="radio"]:checked, ol.options input[type="checkbox"]:checked');
+  const selectedInput = root.querySelector('input.NBOptionInput:checked, ol.options input[type="radio"]:checked, ol.options input[type="checkbox"]:checked, input[type="radio"]:checked, input[type="checkbox"]:checked');
   if (!selectedInput) {
     return '';
   }
@@ -448,8 +469,11 @@ function extractQuestionIdentityFromDom(root, adapterDocument, adapterWindow, op
   const answerBox = root && typeof root.querySelector === 'function'
     ? root.querySelector('div[id$="_div"].NBOptionListComp.answerbox, .NBOptionListComp.answerbox, .answerbox, input.NBOptionInput[name], ol.options input[name]')
     : null;
+  const answerInput = answerBox && normalizeString(answerBox.tagName, '').toLowerCase() === 'input'
+    ? answerBox
+    : (root && typeof root.querySelector === 'function' ? root.querySelector('input.NBOptionInput[name], ol.options input[name]') : null);
   const answerBoxId = safeAttribute(answerBox, 'id');
-  const answerBoxComponentId = answerBoxId && answerBoxId.endsWith('_div') ? answerBoxId.slice(0, -4) : safeAttribute(answerBox, 'name');
+  const answerBoxComponentId = answerBoxId && answerBoxId.endsWith('_div') ? answerBoxId.slice(0, -4) : firstNonEmpty([safeAttribute(answerBox, 'name'), safeAttribute(answerInput, 'name')]);
   const rawMedleyId = safeDatasetValue(medleyElement, 'medleyId') || safeAttribute(medleyElement, 'data-medley-id') || safeAttribute(medleyElement, 'id');
   const medleyId = /^medley$/i.test(rawMedleyId) ? '' : rawMedleyId;
   const examIdentity = extractExamIdentityFromDom(adapterDocument, adapterWindow);
@@ -1093,10 +1117,10 @@ function normalizeChoicesFromAngular(rawChoices) {
 }
 
 const RAW_ITEM_SELECTED_ANSWER_FIELDS = Object.freeze([
-  'selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'userAnswerId',
+  'selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'userAnswerId', 'currentResponse', 'answer',
 ]);
 const RESPONSE_SELECTED_ANSWER_FIELDS = Object.freeze([
-  'selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'userAnswerId', 'optionId', 'choiceId', 'value', 'key', 'id',
+  'selectedAnswerId', 'selectedResponseId', 'selectedOptionId', 'answerId', 'responseId', 'userAnswerId', 'currentResponse', 'optionId', 'choiceId', 'value', 'key', 'id', 'answer',
 ]);
 const NESTED_RESPONSE_FIELDS = Object.freeze(['response', 'answer', 'selectedAnswer', 'selectedResponse', 'itemResponse', 'userAnswer']);
 const CHOICE_COLLECTION_FIELDS = Object.freeze(['choices', 'options', 'answerOptions', 'answerChoices', 'answers']);
@@ -1320,6 +1344,25 @@ function normalizeLaunchedScopeFromAngular(roots, fallbackScope) {
   });
 }
 
+function normalizeAngularItemIndex(rawItem, fallbackIndex = 0) {
+  const rawIndex = readCandidateProperty(rawItem, ['itemIndex', 'index', 'ordinal', 'position', 'number', 'sequence']);
+  const fallback = coercePositiveInteger(fallbackIndex, 0);
+  if (typeof rawIndex === 'number' && Number.isInteger(rawIndex) && rawIndex >= 0) {
+    if (fallback > 0 && rawIndex === fallback - 1) {
+      return fallback;
+    }
+    return rawIndex > 0 ? rawIndex : (fallback || 1);
+  }
+  if (typeof rawIndex === 'string' && /^\d+$/.test(rawIndex.trim())) {
+    const parsed = Number(rawIndex.trim());
+    if (fallback > 0 && parsed === fallback - 1) {
+      return fallback;
+    }
+    return parsed > 0 ? parsed : (fallback || 1);
+  }
+  return fallback || 1;
+}
+
 function normalizeAngularItem(rawItem, options = {}) {
   const examIdentity = options.examIdentity || {};
   const fallback = options.fallback || {};
@@ -1353,10 +1396,7 @@ function normalizeAngularItem(rawItem, options = {}) {
     readCandidateProperty(rawItem, ['blockNumber', 'block', 'blockIndex', 'currentBlock', 'sectionNumber']),
     blockFallback || 1
   );
-  const itemIndex = coercePositiveInteger(
-    readCandidateProperty(rawItem, ['itemIndex', 'index', 'ordinal', 'position', 'number', 'sequence']),
-    indexFallback || 1
-  );
+  const itemIndex = normalizeAngularItemIndex(rawItem, indexFallback || 1);
   const identity = buildQuestionIdentity({
     examProgram: examIdentity.program,
     examName: examIdentity.examName,
@@ -2086,7 +2126,8 @@ function mergeItemListWithFallback(primaryItems, fallbackItems, fallbackAnswers 
       return item;
     }
     const fallbackSelectedAnswerId = getFallbackSelectedAnswerId(item, fallbackItem, fallbackAnswers);
-    const fallbackSaysUnanswered = !fallbackItem.answered && !fallbackSelectedAnswerId;
+    const hasPrimaryAnswerEvidence = Boolean(item.answered || normalizeString(item.selectedAnswerId, ''));
+    const fallbackSaysUnanswered = !fallbackItem.answered && !fallbackSelectedAnswerId && !hasPrimaryAnswerEvidence;
     if (fallbackSaysUnanswered) {
       return Object.freeze({
         ...item,
@@ -2111,7 +2152,13 @@ function alignCurrentItemWithItemList(currentItem, itemList) {
     return currentItem || null;
   }
   const lookup = buildItemLookup(itemList);
-  const matched = findMatchingItem(currentItem, lookup);
+  const componentId = normalizeString(currentItem.componentId, '');
+  const componentMatches = componentId
+    ? itemList.filter((item) => normalizeString(item && item.componentId, '') === componentId)
+    : [];
+  const shouldMatchByComponentOnly = normalizeString(currentItem.identitySource, '') === 'item-id' && Boolean(componentId);
+  const directMatch = shouldMatchByComponentOnly ? null : findMatchingItem(currentItem, lookup);
+  const matched = directMatch || (shouldMatchByComponentOnly && componentMatches.length === 1 ? componentMatches[0] : null);
   if (!matched) {
     return currentItem;
   }
@@ -2120,7 +2167,13 @@ function alignCurrentItemWithItemList(currentItem, itemList) {
   if (currentQuestionId && !matchedQuestionId) {
     return Object.freeze({ ...currentItem, current: true });
   }
-  return Object.freeze({ ...matched, current: true });
+  return Object.freeze({
+    ...matched,
+    selectedAnswerId: normalizeString(currentItem.selectedAnswerId, matched.selectedAnswerId),
+    answered: Boolean(matched.answered || currentItem.answered || normalizeString(currentItem.selectedAnswerId, '')),
+    marked: Boolean(matched.marked || currentItem.marked),
+    current: true,
+  });
 }
 
 function sanitizeAnswersWithFallbackItemList(answers, itemList, fallbackItems, fallbackAnswers = {}) {
@@ -2136,7 +2189,7 @@ function sanitizeAnswersWithFallbackItemList(answers, itemList, fallbackItems, f
       return;
     }
     const fallbackSelectedAnswerId = getFallbackSelectedAnswerId(item, fallbackItem, fallbackAnswers);
-    if (!fallbackItem.answered && !fallbackSelectedAnswerId) {
+    if (!fallbackItem.answered && !fallbackSelectedAnswerId && !item.answered) {
       const questionId = normalizeString(item && item.questionId, '');
       const primaryAnswerId = normalizeString(draft[questionId], '');
       const primarySelectedAnswerId = normalizeString(item && item.selectedAnswerId, '');
@@ -2172,11 +2225,10 @@ function mergeWebfredState(angularState, domState, options = {}) {
         : item
     ));
   }
-  const rawAnswers = Object.freeze({
+  const rawAnswers = {
     ...fallbackAnswers,
     ...(primary.answers || {}),
-  });
-  const answers = sanitizeAnswersWithFallbackItemList(rawAnswers, itemList, fallbackItemList, fallbackAnswers);
+  };
   const marks = Object.freeze({
     ...((fallback && fallback.marks) || {}),
     ...(primary.marks || {}),
@@ -2184,11 +2236,21 @@ function mergeWebfredState(angularState, domState, options = {}) {
   const currentContent = chooseCurrentContent(primary.currentContent, fallback && fallback.currentContent);
   const shouldPreferFallbackCurrentItem = Boolean(currentContent === (fallback && fallback.currentContent) && fallback && fallback.currentItem && contentHasMediaEvidence(fallback.currentContent));
   if (shouldPreferFallbackCurrentItem) {
-    currentItem = fallback.currentItem;
+    const fallbackCurrentItem = fallback.currentItem;
+    const shouldAlignFallbackCurrent = normalizeString(fallbackCurrentItem && fallbackCurrentItem.identitySource, '') === 'item-id'
+      && Boolean(normalizeString(fallbackCurrentItem && fallbackCurrentItem.componentId, ''));
+    currentItem = shouldAlignFallbackCurrent ? alignCurrentItemWithItemList(fallbackCurrentItem, itemList) : fallbackCurrentItem;
+    const fallbackQuestionId = normalizeString(fallbackCurrentItem && fallbackCurrentItem.questionId, '');
+    const alignedQuestionId = normalizeString(currentItem && currentItem.questionId, '');
+    if (fallbackQuestionId && alignedQuestionId && fallbackQuestionId !== alignedQuestionId && normalizeString(rawAnswers[fallbackQuestionId], '')) {
+      rawAnswers[alignedQuestionId] = normalizeString(rawAnswers[alignedQuestionId], rawAnswers[fallbackQuestionId]);
+      delete rawAnswers[fallbackQuestionId];
+    }
   }
   if (!shouldPreferFallbackCurrentItem) {
     currentItem = alignCurrentItemWithItemList(currentItem, itemList);
   }
+  const answers = sanitizeAnswersWithFallbackItemList(Object.freeze(rawAnswers), itemList, fallbackItemList, fallbackAnswers);
   const primaryTerminal = primary.terminalState || {};
   const fallbackTerminal = fallback && fallback.terminalState ? fallback.terminalState : {};
   const terminalState = Object.freeze({

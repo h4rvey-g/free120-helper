@@ -1282,7 +1282,24 @@ async function persistTrackingState(options) {
       effectiveCurrentItem && effectiveCurrentItem.selectedAnswerId,
     ]);
     const shouldPreferCapturedAdapterState = Boolean(options.preferAdapterState && effectiveCurrentSelectedAnswerId && !domAnswerAuthoritative);
-    if (rootQuestionId && rootQuestionId !== effectiveCurrentQuestionId && !shouldPreferCapturedAdapterState) {
+    const adapterIdentityIsTrusted = normalizeString(effectiveCurrentItem && effectiveCurrentItem.identitySource, '') === 'component-medley';
+    const domIdentityIsTrusted = normalizeString(domIdentity && domIdentity.identitySource, '') === 'component-medley';
+    const trustedItemMatchingDom = !domIdentityIsTrusted && domIdentity
+      ? effectiveItemList.find((candidate) => (
+          normalizeString(candidate && candidate.identitySource, '') === 'component-medley'
+          && normalizeString(candidate && candidate.componentId, '')
+          && normalizeString(candidate.componentId, '') === normalizeString(domIdentity.componentId, '')
+        ))
+      : null;
+    const trustedItemForDom = trustedItemMatchingDom || (adapterIdentityIsTrusted && !domIdentityIsTrusted ? effectiveCurrentItem : null);
+    const domMatchesTrustedAdapterItem = Boolean(trustedItemForDom && domIdentity && (
+      (normalizeString(domIdentity.componentId, '') && normalizeString(domIdentity.componentId, '') === normalizeString(trustedItemForDom.componentId, ''))
+        || (
+          coercePositiveInteger(domIdentity.blockNumber, 0) === coercePositiveInteger(trustedItemForDom.blockNumber, 0)
+          && coercePositiveInteger(domIdentity.itemIndex, 0) === coercePositiveInteger(trustedItemForDom.itemIndex, 0)
+        )
+    ));
+    if (rootQuestionId && rootQuestionId !== effectiveCurrentQuestionId && !shouldPreferCapturedAdapterState && !domMatchesTrustedAdapterItem) {
       const rootItem = normalizeTrackingItem({
         questionId: rootQuestionId,
         componentId: domIdentity.componentId,
@@ -1305,8 +1322,17 @@ async function persistTrackingState(options) {
       effectiveItemList = replaced;
       effectiveCurrentItem = rootItem;
     } else if (domAnswerAuthoritative || selectedFromDom) {
-      effectiveCurrentItem = Object.freeze({ ...effectiveCurrentItem, selectedAnswerId: selectedFromDom, current: true });
-      effectiveItemList = effectiveItemList.map((item) => item.questionId === effectiveCurrentItem.questionId ? Object.freeze({ ...item, selectedAnswerId: selectedFromDom, current: true }) : item);
+      if (domMatchesTrustedAdapterItem && trustedItemForDom && trustedItemForDom.questionId !== effectiveCurrentItem.questionId) {
+        effectiveCurrentItem = Object.freeze({ ...trustedItemForDom, selectedAnswerId: selectedFromDom, answered: true, current: true });
+        effectiveItemList = effectiveItemList.map((item) => (
+          item.questionId === trustedItemForDom.questionId
+            ? Object.freeze({ ...item, selectedAnswerId: selectedFromDom, answered: true, current: true })
+            : Object.freeze({ ...item, current: false })
+        ));
+      } else {
+        effectiveCurrentItem = Object.freeze({ ...effectiveCurrentItem, selectedAnswerId: selectedFromDom, answered: selectedFromDom ? true : effectiveCurrentItem.answered, current: true });
+        effectiveItemList = effectiveItemList.map((item) => item.questionId === effectiveCurrentItem.questionId ? Object.freeze({ ...item, selectedAnswerId: selectedFromDom, answered: selectedFromDom ? true : item.answered, current: true }) : item);
+      }
     }
     if ((effectiveCurrentItem && effectiveCurrentItem.questionId) && (effectiveCurrentItem !== currentItem || effectiveItemList !== itemList || selectedFromDom || domAnswerAuthoritative)) {
       effectiveAdapterState = Object.freeze({

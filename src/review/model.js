@@ -194,11 +194,26 @@ function buildResultByQuestionId(scoreSummary) {
   return resultByQuestionId;
 }
 
+function snapshotHasRenderableReviewContent(snapshot) {
+  return Boolean(normalizeString(snapshot && (snapshot.renderedHtml || snapshot.promptHtml), '')
+    || arrayOrEmpty(snapshot && snapshot.choices).length);
+}
+
+function scoreReviewSnapshotForQuestion(snapshot) {
+  return (snapshotHasRenderableReviewContent(snapshot) ? 100 : 0)
+    + (normalizeString(snapshot && snapshot.selectedAnswerId, '') ? 10 : 0)
+    + arrayOrEmpty(snapshot && snapshot.choices).length;
+}
+
 function buildSnapshotByQuestionId(snapshots) {
   const snapshotByQuestionId = new Map();
   arrayOrEmpty(snapshots).forEach((snapshot) => {
     const questionId = normalizeString(snapshot && snapshot.questionId, '');
-    if (questionId && !snapshotByQuestionId.has(questionId)) {
+    if (!questionId) {
+      return;
+    }
+    const existing = snapshotByQuestionId.get(questionId);
+    if (!existing || scoreReviewSnapshotForQuestion(snapshot) > scoreReviewSnapshotForQuestion(existing)) {
       snapshotByQuestionId.set(questionId, snapshot);
     }
   });
@@ -684,7 +699,9 @@ function scoreReviewQuestionCandidate(question) {
     + (question && question._positionTrusted ? 40 : 0)
     + (candidate.fromCorrectAnswers ? 20 : 0)
     + (question && question.componentId && question.medleyId ? 20 : 0)
+    + (snapshotHasRenderableReviewContent(question && question.snapshot) ? 18 : 0)
     + (question && question.snapshot && question.snapshot.renderedHtml ? 10 : 0)
+    + (question && question.snapshot && arrayOrEmpty(question.snapshot.choices).length ? 8 : 0)
     + (candidate.fromScore ? 6 : 0)
     + (candidate.fromSnapshot ? 6 : 0)
     + (question && question.selectedAnswerId ? 3 : 0)

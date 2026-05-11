@@ -4,7 +4,20 @@ async page => {
   const WEBFRED_URL = `${ORIGIN}/webfred/#/main?program=USMLE&exam=STPF1&section=STPF1C0139&testDefinitionName=STPF1C0139&testDefinitionDisplayName=Step%201%20Block%203&publicationName=LIVE120&block=3&mode=test`;
   const QBANK_ATTEMPT_ID = 'qbank-cache:USMLE:STPF1:STPF1C0139';
   const CHOICES = ['A', 'B', 'C', 'D'];
-  const USER_ANSWERS = { 1: 'A', 2: 'B', 3: 'C', 4: 'D', 5: 'B' };
+  const QUESTION_COUNT = 40;
+  const ANSWER_RANDOM_SEED = 0xf120b3;
+  const makeSeededRandom = (seed) => {
+    let state = seed >>> 0;
+    return () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+  };
+  const buildRandomAnswers = (count) => {
+    const random = makeSeededRandom(ANSWER_RANDOM_SEED);
+    return Object.fromEntries(Array.from({ length: count }, (_unused, index) => [index + 1, CHOICES[Math.floor(random() * CHOICES.length)]]));
+  };
+  const USER_ANSWERS = buildRandomAnswers(QUESTION_COUNT);
   const PNG_BYTES = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=';
   const WEBM_BYTES = 'GkXfo59ChYEBQveBAQ==';
 
@@ -176,7 +189,7 @@ async page => {
     await page.locator(selector).check();
     await page.evaluate(() => window.Free120Helper.tracking.flush('live-answer'));
     await waitFor(() => page.evaluate((expected) => Object.values(window.Free120Helper.tracking.getAttempt()?.responses || {}).filter(Boolean).length === expected, index), `answer ${index} not tracked`);
-    if (index < 5) await page.locator('#native-next').click();
+    if (index < QUESTION_COUNT) await page.locator('#native-next').click();
   }
 
   await page.locator('#native-end').click();
@@ -202,7 +215,7 @@ async page => {
     };
   });
   assert(completion.status === 'completed' && completion.reviewReady === true, 'completed attempt not review-ready', completion);
-  assert(completion.questionCount === 40 && completion.answered === 5, 'completed attempt count mismatch', completion);
+  assert(completion.questionCount === QUESTION_COUNT && completion.answered === QUESTION_COUNT, 'completed attempt count mismatch', completion);
   assert(completion.keyStatus === 'complete' && completion.keyKnown === 40, 'completed attempt key mismatch', completion);
 
   await page.evaluate(() => { window.open = (url) => { window.__free120ReviewUrl = String(url || ''); return { closed: false, focus() {} }; }; });
@@ -252,7 +265,7 @@ async page => {
   assert(new Set(reviewState.summaries.map((item) => item.questionId)).size === 40, 'review question IDs duplicated or missing');
   assert(new Set(reviewState.summaries.map((item) => item.itemIndex)).size === 40, 'review item indexes duplicated or missing');
   assert(reviewState.summaries.every((item) => item.stem && item.optionCount === 4 && item.correctCount === 1 && !item.unavailable), 'review question content incomplete', reviewState.summaries.filter((item) => !(item.stem && item.optionCount === 4 && item.correctCount === 1 && !item.unavailable)));
-  assert(reviewState.navAnsweredCount === 5, 'review answered nav count mismatch', reviewState.navAnsweredCount);
+  assert(reviewState.navAnsweredCount === QUESTION_COUNT, 'review answered nav count mismatch', reviewState.navAnsweredCount);
   const selected = Object.fromEntries(reviewState.summaries.filter((item) => item.selected).map((item) => [item.itemIndex, item.selected]));
   assert(JSON.stringify(selected) === JSON.stringify(USER_ANSWERS), 'review selected answers mismatch', selected);
   assert(reviewState.summaries.find((item) => item.itemIndex === 8)?.q8ImageLoaded === true, 'review Q8 cached image missing');
