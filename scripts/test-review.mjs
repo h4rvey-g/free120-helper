@@ -33,7 +33,7 @@ const snapshots = Object.freeze([
     questionId: 'q1',
     blockNumber: 1,
     itemIndex: 1,
-    renderedHtml: '<div id="item1"><div class="NBExposition">Synthetic stem</div><div id="q1_div" class="NBOptionListComp answerbox"><form><ol class="options"><li class="stContext"><input class="NBOptionInput" type="radio" value="A"><span>Option A</span></li><li class="stContext"><input class="NBOptionInput" type="radio" value="B"><span>Option B</span></li></ol></form></div></div>',
+    renderedHtml: '<div id="item1"><div class="NBExposition">Synthetic stem</div><div id="q1_div" class="NBOptionListComp answerbox"><form><ol class="options"><li class="stContext"><input class="NBOptionInput" type="radio" value="A"><span>Option A</span></li><li class="stContext"><input class="NBOptionInput" type="radio" value="B"><span>Option B</span></li></ol></form></div><div class="proceedContainer" ng-show="exam.currItem.index != exam.items.length - 1"><button class="button-blue" tabindex="-1" disabled="" aria-disabled="true">{{ ::localize(\'proceedToNext\') }}</button></div><button class="button-red exit-media-player" ng-show="fred.zoomMedia == \'zoomed-media-player\'" ng-mouseup="fred.zoomMedia = \'\'">X</button><button class="button-red full-media-player" ng-mouseup="fred.zoomMedia = \'zoomed-media-player\'">{{ ::localize(\'viewFullScreen\') }}</button></div>',
     choices: Object.freeze([
       Object.freeze({ id: 'A', label: 'Option A', index: 1 }),
       Object.freeze({ id: 'B', label: 'Option B', index: 2 }),
@@ -78,11 +78,42 @@ assert.match(html, /ol\.options > li\.stContext/);
 assert.match(html, /div\[id\$="_div"\]\.NBOptionListComp\.answerbox/);
 assert.match(html, /f120-review-block-filter/);
 assert.match(html, /Score summary/);
+assert.match(html, /<div class="f120-review-current-header">[\s\S]*id="f120-review-current-label"[\s\S]*<div class="f120-review-question-nav"[\s\S]*id="f120-review-prev"[\s\S]*id="f120-review-next"[\s\S]*id="f120-review-current-status"/, 'previous/next controls render in the current question header');
+const toolbarControlsHtml = html.match(/<div class="f120-review-controls"[\s\S]*?<\/div>/)?.[0] || '';
+assert.doesNotMatch(toolbarControlsHtml, /f120-review-(prev|next)/, 'previous/next controls are not in the top toolbar');
+assert.match(html, /function getNavScrollContainer/, 'review runtime can identify the scrollable left nav container');
+assert.match(html, /restoreScrollPosition\(scrollContainer, previousScroll\)/, 'review nav preserves left-nav scroll position across item selection renders');
 assert.match(html, /<base href="https:\/\/orientation\.nbme\.org\/webfred\/">/);
 assert.match(html, /media-src 'self' data:/);
 assert.match(html, /function normalizeSnapshotMedia/);
 assert.match(html, /preload', 'none'/);
 assert.match(html, /function applyCachedResourceData/);
+assert.match(html, /function organizeReviewImages/, 'review runtime moves image previews below the stem and above answer options');
+assert.match(html, /function shouldSkipReviewImageOptimization/, 'review runtime skips image optimization for auscultation/hotspot media so click points stay aligned');
+assert.match(html, /getSnapshotMediaInteractions\(question\)\.length/, 'review runtime detects auscultation media interactions before moving images');
+assert.match(html, /f120-review-hotspot-diagram/, 'review runtime protects hotspot diagrams from thumbnail relocation');
+assert.match(html, /function openReviewImageDialog/, 'review runtime supports click-to-enlarge image previews');
+assert.match(html, /f120-review-image-strip/, 'review page styles include compact image preview strip');
+assert.match(html, /f120-review-image-dialog/, 'review page styles include enlarged image dialog');
+assert.match(html, /max-width: 240px/, 'review image thumbnails start at a compact size');
+assert.match(html, /function getDirectOptionText/, 'review runtime reads direct answer text without duplicating nested choice letters');
+assert.match(html, /function normalizeReviewOptionRow/, 'review runtime normalizes answer choices into one-line letter and text rows');
+assert.match(html, /replaceChildren\(row, \[label\]\)/, 'review runtime removes disabled original answer inputs from normalized rows');
+assert.match(html, /function removeOptionNumericPrefixes/, 'review runtime removes ordered-list numeric prefixes from answer choices');
+assert.match(html, /f120-review-options-list/, 'review page styles suppress numeric answer choice list markers');
+assert.match(html, /f120-review-option-label/, 'review page styles keep answer letter and text on one line');
+assert.match(html, /#medley \.NBExposition[\s\S]*max-width: 820px/, 'review page styles constrain question stem line length for readability');
+assert.match(html, /#medley \.NBExposition[\s\S]*line-height: 1\.58/, 'review page styles improve question stem line spacing');
+assert.match(html, /#medley \.NBExposition[\s\S]*font-size: 16px/, 'review page styles keep question stem font size aligned with options');
+assert.match(html, /#medley ol\.options\.f120-review-options-list[\s\S]*max-width: 820px/, 'review page styles align answer options with readable stem width');
+assert.match(html, /function isTableOptionRow/, 'review runtime detects table-form answer choices');
+assert.match(html, /#medley tr\.f120-review-option-row \{ display: table-row; \}/, 'review page styles preserve table-form answer choice layout');
+assert.match(html, /\.NBOptionTableComp\.answerbox table[\s\S]*border-collapse: collapse/, 'review page styles keep answer option tables readable');
+assert.match(html, /function removeExamOnlyProceedControls/, 'review runtime removes exam-only proceed controls from snapshots');
+assert.match(html, /\.proceedContainer/, 'review runtime targets stale exam proceed containers');
+assert.match(html, /function removeExamOnlyMediaControls/, 'review runtime removes disabled WebFRED media fullscreen/exit buttons from snapshots');
+assert.match(html, /\.exit-media-player/, 'review runtime targets stale media exit controls');
+assert.match(html, /\.full-media-player/, 'review runtime targets stale media fullscreen controls');
 assert.doesNotMatch(html, /fetch\s*\(/);
 assert.doesNotMatch(html, /XMLHttpRequest/);
 
@@ -133,6 +164,8 @@ assert.match(cachedMediaHtml, /data:image\/png;base64,AAAA/, 'review embeds cach
 assert.match(cachedMediaHtml, /data:video\/webm;base64,BBBB/, 'review embeds cached video data');
 assert.match(cachedMediaHtml, /f120-review-native-media-fallback/, 'review runtime can render native media fallback');
 assert.match(cachedMediaHtml, /function createInteractiveMediaFallback/, 'review runtime can render interactive media hotspot fallback');
+assert.match(cachedMediaHtml, /function removeEmptyMediaPlayerPlaceholders/, 'review runtime removes empty WebFRED media-player placeholders before rendering auscultation fallback');
+assert.match(cachedMediaHtml, /removeEmptyMediaPlayerPlaceholders\(container\)/, 'interactive media fallback clears blank media-player placeholders');
 assert.match(cachedMediaHtml, /function setMediaSource/, 'review runtime switches cached media sources');
 assert.match(cachedMediaHtml, /function playDataUrlAudio/, 'review runtime plays cached media through Web Audio without CSP media loads');
 assert.match(cachedMediaHtml, /f120-review-audio-player/, 'review runtime includes CSP-safe audio player');

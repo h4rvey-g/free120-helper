@@ -644,8 +644,6 @@ function buildStaticShell(model) {
           <label>Block
             <select id="f120-review-block-filter"><option value="all">All blocks</option></select>
           </label>
-          <button type="button" id="f120-review-prev">Previous</button>
-          <button type="button" id="f120-review-next">Next</button>
         </div>
       </header>
       <div class="f120-review-shell">
@@ -653,6 +651,10 @@ function buildStaticShell(model) {
         <main class="f120-review-main">
           <div class="f120-review-current-header">
             <span id="f120-review-current-label">${firstQuestion ? `Block ${escapeHtml(firstQuestion.blockNumber)} · Item ${escapeHtml(firstQuestion.itemIndex)}` : 'No review items'}</span>
+            <div class="f120-review-question-nav" aria-label="Question navigation">
+              <button type="button" id="f120-review-prev">Previous</button>
+              <button type="button" id="f120-review-next">Next</button>
+            </div>
             <span id="f120-review-current-status" class="f120-review-pill f120-review-pill--${escapeHtml(firstStatus)}">${firstQuestion ? `${escapeHtml(statusSymbol(firstStatus))} ${escapeHtml(firstStatus)}` : 'empty'}</span>
           </div>
           <section id="item" aria-label="Question review"><article id="content"><div id="medley"></div></article></section>
@@ -768,11 +770,12 @@ function buildReviewRuntimeScript(model) {
     return candidates.includes(id) || candidates.includes(index);
   }
   function rowInputAnswerId(input, row, index) {
-    if (!input) return 'option-' + (index + 1);
+    const storedValue = text(row && row.getAttribute('data-review-input-value'));
+    if (!input) return storedValue || 'option-' + (index + 1);
     const value = text(input.getAttribute('value'));
     const id = text(input.getAttribute('id'));
     const name = text(input.getAttribute('name'));
-    return value || id || (name && value ? name + ':' + value : '') || row.getAttribute('data-option-id') || 'option-' + (index + 1);
+    return value || storedValue || id || (name && value ? name + ':' + value : '') || row.getAttribute('data-option-id') || 'option-' + (index + 1);
   }
   function rowMatchesAnswer(row, question, answerId, index) {
     const input = row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
@@ -781,8 +784,105 @@ function buildReviewRuntimeScript(model) {
     const choice = (question.snapshot.choices || [])[index];
     return choiceMatches(choice, answerId);
   }
+  function removeOptionNumericPrefixes(root) {
+    qsa('ol.options', root).forEach((list) => {
+      list.classList.add('f120-review-options-list');
+      list.setAttribute('role', 'list');
+    });
+  }
+  function isTableOptionRow(row) {
+    return Boolean(row && row.tagName && row.tagName.toLowerCase() === 'tr' && row.closest('table'));
+  }
+  function isReviewWhitespace(char) {
+    const code = char ? char.charCodeAt(0) : 0;
+    return code === 9 || code === 10 || code === 11 || code === 12 || code === 13 || code === 32 || code === 160;
+  }
+  function collapseReviewWhitespace(value) {
+    const raw = text(value);
+    let output = '';
+    let previousWasSpace = true;
+    for (const char of raw) {
+      if (isReviewWhitespace(char)) {
+        if (!previousWasSpace) {
+          output += ' ';
+          previousWasSpace = true;
+        }
+      } else {
+        output += char;
+        previousWasSpace = false;
+      }
+    }
+    return output.trim();
+  }
+  function removeChoiceLetterFromText(value, letter) {
+    const compact = collapseReviewWhitespace(value);
+    const normalizedLetter = text(letter).split('.').join('').toUpperCase();
+    if (!compact || !normalizedLetter) return compact;
+    if (compact.charAt(0).toUpperCase() !== normalizedLetter) return compact;
+    const next = compact.charAt(1);
+    if (next && next !== '.' && !isReviewWhitespace(next)) return compact;
+    let offset = 1;
+    while (isReviewWhitespace(compact.charAt(offset))) offset += 1;
+    if (compact.charAt(offset) === '.') offset += 1;
+    while (isReviewWhitespace(compact.charAt(offset))) offset += 1;
+    return compact.slice(offset).trim();
+  }
+  function getDirectOptionText(row, letter) {
+    const clone = row.cloneNode(true);
+    qsa('input, .f120-review-option-status, script, style', clone).forEach((node) => node.remove());
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
+    let direct = '';
+    let current = walker.nextNode();
+    while (current) {
+      if (current.parentElement && current.parentElement.closest('.stContext') === clone) {
+        direct += ' ' + current.textContent;
+      }
+      current = walker.nextNode();
+    }
+    return removeChoiceLetterFromText(direct, letter);
+  }
+  function getOptionLetter(row, question, index) {
+    const choice = question && question.snapshot && Array.isArray(question.snapshot.choices) ? question.snapshot.choices[index] : null;
+    const fromChoice = text(choice && (choice.id || choice.index));
+    if (/^[A-Za-z]$/.test(fromChoice)) return fromChoice.toUpperCase();
+    const input = row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
+    const fromInput = text(input && (input.getAttribute('value') || input.getAttribute('id')));
+    if (/^[A-Za-z]$/.test(fromInput)) return fromInput.toUpperCase();
+    return String.fromCharCode(65 + index);
+  }
+  function getOptionText(row, question, index, letter) {
+    const directText = getDirectOptionText(row, letter);
+    if (directText) return directText;
+    const choice = question && question.snapshot && Array.isArray(question.snapshot.choices) ? question.snapshot.choices[index] : null;
+    return removeChoiceLetterFromText(choice && choice.label, letter);
+  }
+  function normalizeReviewOptionRow(row, question, index) {
+    if (!row || row.classList.contains('f120-review-option-row')) return;
+    const letter = getOptionLetter(row, question, index);
+    row.classList.add('f120-review-option-row');
+    row.setAttribute('data-review-option-letter', letter);
+    const input = row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
+    row.setAttribute('data-review-input-value', text(input && input.getAttribute('value')));
+    if (isTableOptionRow(row)) {
+      if (input) input.remove();
+      return;
+    }
+    const optionText = getOptionText(row, question, index, letter);
+    const label = el('span', { className: 'f120-review-option-label' });
+    label.appendChild(el('span', { className: 'f120-review-option-letter', text: letter + '.' }));
+    label.appendChild(el('span', { className: 'f120-review-option-text', text: optionText }));
+    replaceChildren(row, [label]);
+  }
+  function removeExamOnlyProceedControls(root) {
+    qsa('.proceedContainer, [ng-show*="exam.currItem.index"][ng-show*="exam.items.length"], [data-ng-show*="exam.currItem.index"][data-ng-show*="exam.items.length"]', root).forEach((node) => node.remove());
+  }
+  function removeExamOnlyMediaControls(root) {
+    qsa('button.exit-media-player, button.full-media-player, .exit-media-player, .full-media-player, [ng-mouseup*="zoomed-media-player"], [data-ng-mouseup*="zoomed-media-player"]', root).forEach((node) => node.remove());
+  }
   function sanitizeSnapshotFragment(root) {
     qsa('script, iframe, object, embed, link[rel="import"]', root).forEach((node) => node.remove());
+    removeExamOnlyProceedControls(root);
+    removeExamOnlyMediaControls(root);
     qsa('video, audio, source, track', root).forEach((node) => {
       node.removeAttribute('src');
       node.removeAttribute('poster');
@@ -1091,6 +1191,13 @@ function buildReviewRuntimeScript(model) {
     }
     return wrapper;
   }
+  function removeEmptyMediaPlayerPlaceholders(root) {
+    qsa('.media-player, [id^="media-player-"]', root).forEach((node) => {
+      if (node.querySelector('img, video, audio, source, track, canvas, svg, button, .f120-review-native-media-fallback')) return;
+      if (text(node.textContent)) return;
+      node.remove();
+    });
+  }
   function renderNativeMediaFallback(root, question) {
     const urls = (question && question.snapshot && Array.isArray(question.snapshot.resourceUrls)) ? question.snapshot.resourceUrls : [];
     const interactions = getSnapshotMediaInteractions(question);
@@ -1102,6 +1209,7 @@ function buildReviewRuntimeScript(model) {
     qsa('.NBMediaPlayer', root).forEach((container) => {
       if (container.querySelector('.f120-review-native-media-fallback')) return;
       if (interactions.length) {
+        removeEmptyMediaPlayerPlaceholders(container);
         container.appendChild(createInteractiveMediaFallback(question, interactions));
         return;
       }
@@ -1112,6 +1220,126 @@ function buildReviewRuntimeScript(model) {
       audioUrls.slice(0, 12).forEach((url, index) => fallback.appendChild(createNativeMediaElement('audio', getReviewMediaUrl(question, url), 'Audio clip ' + (index + 1))));
       container.appendChild(fallback);
     });
+  }
+  function getReviewImageDialog() {
+    let dialog = qs('#f120-review-image-dialog');
+    if (dialog) return dialog;
+    dialog = el('div', { className: 'f120-review-image-dialog', attrs: { id: 'f120-review-image-dialog', hidden: 'hidden', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Expanded review image' } });
+    const backdrop = el('button', { className: 'f120-review-image-dialog-backdrop', attrs: { type: 'button', 'aria-label': 'Close image preview' } });
+    const panel = el('div', { className: 'f120-review-image-dialog-panel' });
+    const close = el('button', { className: 'f120-review-image-dialog-close', attrs: { type: 'button', 'aria-label': 'Close image preview' }, text: '×' });
+    const image = el('img', { className: 'f120-review-image-dialog-img', attrs: { alt: '' } });
+    backdrop.addEventListener('click', closeReviewImageDialog);
+    close.addEventListener('click', closeReviewImageDialog);
+    panel.append(close, image);
+    dialog.append(backdrop, panel);
+    document.body.appendChild(dialog);
+    return dialog;
+  }
+  function isReviewImageDialogOpen() {
+    const dialog = qs('#f120-review-image-dialog');
+    return Boolean(dialog && !dialog.hidden);
+  }
+  function closeReviewImageDialog() {
+    const dialog = qs('#f120-review-image-dialog');
+    if (!dialog) return;
+    const image = qs('.f120-review-image-dialog-img', dialog);
+    dialog.hidden = true;
+    dialog.classList.remove('is-open');
+    if (image) image.removeAttribute('src');
+  }
+  function openReviewImageDialog(sourceImage) {
+    const src = text(sourceImage && (sourceImage.currentSrc || sourceImage.getAttribute('src') || sourceImage.getAttribute('data-ng-src') || sourceImage.getAttribute('ng-src') || sourceImage.getAttribute('data-src')));
+    if (!src) return;
+    const dialog = getReviewImageDialog();
+    const image = qs('.f120-review-image-dialog-img', dialog);
+    const close = qs('.f120-review-image-dialog-close', dialog);
+    if (image) {
+      image.setAttribute('src', src);
+      image.setAttribute('alt', text(sourceImage.getAttribute('alt'), 'Expanded review image'));
+    }
+    dialog.hidden = false;
+    dialog.classList.add('is-open');
+    if (close) close.focus();
+  }
+  function imageHasReviewSource(image) {
+    return Boolean(text(image && (image.getAttribute('src') || image.getAttribute('data-ng-src') || image.getAttribute('ng-src') || image.getAttribute('data-src'))));
+  }
+  function isInsideReviewAnswerOptions(node) {
+    return Boolean(node && node.closest && node.closest('ol.options, li.stContext, .NBOptionListComp.answerbox, .answerbox'));
+  }
+  function isReviewMediaContainer(node) {
+    return Boolean(node && node.matches && node.matches('.NBMediaPlayer, .f120-review-native-media-fallback, .media-player, .media.magnify, [id^="media-"], [id^="inline-"]'));
+  }
+  function getReviewImageContainer(image, root) {
+    if (!image || isInsideReviewAnswerOptions(image) || (image.closest && image.closest('.f120-review-media-inline-duplicate'))) return null;
+    let container = image;
+    let node = image.parentElement;
+    while (node && node !== root && node !== document.body) {
+      if (isInsideReviewAnswerOptions(node)) return null;
+      if (isReviewMediaContainer(node)) container = node;
+      node = node.parentElement;
+    }
+    return container;
+  }
+  function findReviewImagePlacementRoot(root) {
+    return qs('div[id^="item"], .NBSinglePage, #medley', root) || root;
+  }
+  function insertReviewImageStrip(strip, root) {
+    const placementRoot = findReviewImagePlacementRoot(root);
+    const stem = qs('div.NBExposition, .NBExposition, [class*="Exposition"]', placementRoot) || qs('div.NBExposition, .NBExposition, [class*="Exposition"]', root);
+    const answerBox = qs('div[id$="_div"].NBOptionListComp.answerbox, .NBOptionListComp.answerbox, .answerbox, ol.options', placementRoot) || qs('div[id$="_div"].NBOptionListComp.answerbox, .NBOptionListComp.answerbox, .answerbox, ol.options', root);
+    if (stem && stem.parentNode) {
+      stem.insertAdjacentElement('afterend', strip);
+      return;
+    }
+    if (answerBox && answerBox.parentNode) {
+      answerBox.parentNode.insertBefore(strip, answerBox);
+      return;
+    }
+    placementRoot.appendChild(strip);
+  }
+  function enhanceReviewImage(image) {
+    if (!imageHasReviewSource(image)) return;
+    image.classList.add('f120-review-image-thumb');
+    image.setAttribute('role', 'button');
+    image.setAttribute('tabindex', '0');
+    image.setAttribute('title', 'Click to enlarge image');
+    image.setAttribute('aria-label', 'Click to enlarge image');
+    image.addEventListener('click', () => openReviewImageDialog(image));
+    image.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openReviewImageDialog(image);
+      }
+    });
+  }
+  function shouldSkipReviewImageOptimization(root, question) {
+    return Boolean(
+      getSnapshotMediaInteractions(question).length
+      || qs('.f120-review-native-media-fallback--interactive, .f120-review-hotspot-diagram, .f120-review-hotspot-marker, .f120-review-hotspot-controls', root)
+    );
+  }
+  function organizeReviewImages(root, question) {
+    if (shouldSkipReviewImageOptimization(root, question)) return;
+    const containers = [];
+    const seen = new Set();
+    qsa('img', root).forEach((image) => {
+      if (!imageHasReviewSource(image)) return;
+      const container = getReviewImageContainer(image, root);
+      if (!container) return;
+      enhanceReviewImage(image);
+      if (seen.has(container)) return;
+      seen.add(container);
+      containers.push(container);
+    });
+    if (!containers.length) return;
+    const strip = el('div', { className: 'f120-review-image-strip', attrs: { 'aria-label': 'Question image previews' } });
+    containers.forEach((container) => {
+      container.classList.add('f120-review-image-preview');
+      strip.appendChild(container);
+    });
+    insertReviewImageStrip(strip, root);
   }
   function normalizeSnapshotMedia(root) {
     qsa('img, video, audio, source, track', root).forEach(copySnapshotMediaSource);
@@ -1137,6 +1365,11 @@ function buildReviewRuntimeScript(model) {
     const input = row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
     const marker = el('span', { className: 'f120-review-option-status f120-review-option-status--' + kind, text: symbol || '' });
     const visibleSpan = row.querySelector('span, label');
+    if (isTableOptionRow(row)) {
+      const firstCell = row.querySelector('td, th');
+      if (firstCell) firstCell.insertBefore(marker, firstCell.firstChild);
+      return;
+    }
     if (input && input.parentNode === row) {
       if (visibleSpan && visibleSpan.parentNode === row) row.insertBefore(marker, visibleSpan);
       else input.insertAdjacentElement('afterend', marker);
@@ -1145,13 +1378,15 @@ function buildReviewRuntimeScript(model) {
     }
   }
   function decorateOptionRows(root, question) {
+    removeOptionNumericPrefixes(root);
     const rows = qsa('ol.options > li.stContext, li.stContext', root);
     const sourceRows = rows.length
       ? rows
       : qsa('input.NBOptionInput, input[type="radio"], input[type="checkbox"]', root).map((input) => (
-          input.closest('li, tr, label, .stContext, .NBOptionListComp, .answerbox') || input.parentElement || input
+          input.closest('li, tr, label, .stContext') || input.parentElement || input
         ));
     Array.from(new Set(sourceRows)).forEach((row, index) => {
+      normalizeReviewOptionRow(row, question, index);
       const isCorrect = rowMatchesAnswer(row, question, question.correctAnswerId, index);
       const isSelected = rowMatchesAnswer(row, question, question.selectedAnswerId, index);
       let kind = 'empty';
@@ -1170,8 +1405,7 @@ function buildReviewRuntimeScript(model) {
         row.classList.add('f120-review-option--selected-unknown');
       }
       insertStatusMarker(row, kind, symbol);
-      const input = row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
-      if (input) input.checked = Boolean(isSelected);
+      row.setAttribute('aria-selected', String(Boolean(isSelected)));
     });
   }
   function insertTimeSpent(root, question) {
@@ -1228,6 +1462,7 @@ function buildReviewRuntimeScript(model) {
     renderNativeMediaFallback(medley, question);
     normalizeSnapshotMedia(medley);
     applyCachedResourceData(medley, question);
+    organizeReviewImages(medley, question);
     qsa('video, audio', medley).forEach((node) => {
       node.removeAttribute('src');
       qsa('source', node).forEach((source) => source.removeAttribute('src'));
@@ -1291,9 +1526,22 @@ function buildReviewRuntimeScript(model) {
     status.className = 'f120-review-pill f120-review-pill--' + question.status;
     status.textContent = (STATUS_SYMBOL[question.status] || '•') + ' ' + question.status;
   }
+  function getNavScrollContainer(nav) {
+    return qs('nav.f120-review-leftnav') || (nav && nav.parentElement) || nav;
+  }
+  function readScrollPosition(node) {
+    return { top: node ? Number(node.scrollTop || 0) : 0, left: node ? Number(node.scrollLeft || 0) : 0 };
+  }
+  function restoreScrollPosition(node, position) {
+    if (!node || !position) return;
+    node.scrollTop = position.top;
+    node.scrollLeft = position.left;
+  }
   function renderNav() {
     const nav = qs('ol#leftnav');
     const visible = visibleQuestions();
+    const scrollContainer = getNavScrollContainer(nav);
+    const previousScroll = readScrollPosition(scrollContainer);
     replaceChildren(nav, []);
     visible.forEach((question, index) => {
       const previousQuestion = index > 0 ? visible[index - 1] : null;
@@ -1309,6 +1557,7 @@ function buildReviewRuntimeScript(model) {
       row.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); state.currentQuestionId = question.questionId; render(); } });
       nav.appendChild(row);
     });
+    restoreScrollPosition(scrollContainer, previousScroll);
   }
   function renderBlockOptions() {
     const select = qs('#f120-review-block-filter');
@@ -1373,6 +1622,10 @@ function buildReviewRuntimeScript(model) {
     qs('#f120-review-prev').addEventListener('click', () => move(-1));
     qs('#f120-review-next').addEventListener('click', () => move(1));
     document.addEventListener('keydown', (event) => {
+      if (isReviewImageDialogOpen()) {
+        if (event.key === 'Escape') closeReviewImageDialog();
+        return;
+      }
       if (event.target && ['INPUT','SELECT','TEXTAREA'].includes(event.target.tagName)) return;
       if (event.key === 'ArrowLeft') move(-1);
       if (event.key === 'ArrowRight') move(1);
