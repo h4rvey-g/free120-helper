@@ -501,6 +501,47 @@ const incompleteProgressModel = buildReviewModel(Object.freeze({
 assert.equal(incompleteProgressModel.questions.length, 40, 'review ignores incomplete progress question-id scope');
 assert.deepEqual(incompleteProgressModel.questions.map((question) => question.itemIndex), Array.from({ length: 40 }, (_item, index) => index + 1));
 
+const allBlockReviewIds = [1, 2, 3].flatMap((blockNumber) => Array.from({ length: 40 }, (_item, index) => `all-block-b${blockNumber}-q${index + 1}`));
+const allBlockReviewModel = buildReviewModel(Object.freeze({
+  id: 'attempt-step1-all-blocks-review',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: 'all', blockCount: 3, testDefinitionDisplayName: 'Step 1 All Blocks' }),
+  questionIds: Object.freeze(allBlockReviewIds),
+  questionCount: 120,
+  responses: Object.freeze(Object.fromEntries(allBlockReviewIds.map((questionId) => [questionId, 'A']))),
+  correctAnswers: Object.freeze(Object.fromEntries(allBlockReviewIds.map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    progress: Object.freeze({
+      byBlock: Object.freeze({
+        3: Object.freeze({ blockNumber: 3, answered: 40, total: 40, questionIds: Object.freeze(allBlockReviewIds.slice(80)), answeredQuestionIds: Object.freeze(allBlockReviewIds.slice(80)) }),
+      }),
+    }),
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries([1, 2, 3].flatMap((blockNumber) => Array.from({ length: 40 }, (_item, index) => {
+      const questionId = `all-block-b${blockNumber}-q${index + 1}`;
+      return [questionId, Object.freeze({ questionId, blockNumber, itemIndex: index + 1 })];
+    })))),
+  }),
+}), []);
+assert.equal(allBlockReviewModel.questions.length, 120, 'all-block review does not get scoped to one progress block');
+assert.deepEqual(allBlockReviewModel.scoreSummary.perBlock.map((block) => [block.blockNumber, block.total]), [[1, 40], [2, 40], [3, 40]]);
+const allBlockReviewHtml = buildReviewHtml(Object.freeze({
+  id: 'attempt-step1-all-blocks-review-html',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: 'all', blockCount: 3, testDefinitionDisplayName: 'Step 1 All Blocks' }),
+  questionIds: Object.freeze(allBlockReviewIds),
+  questionCount: 120,
+  responses: Object.freeze(Object.fromEntries(allBlockReviewIds.map((questionId) => [questionId, 'A']))),
+  correctAnswers: Object.freeze(Object.fromEntries(allBlockReviewIds.map((questionId) => [questionId, 'A']))),
+  source: Object.freeze({
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries([1, 2, 3].flatMap((blockNumber) => Array.from({ length: 40 }, (_item, index) => {
+      const questionId = `all-block-b${blockNumber}-q${index + 1}`;
+      return [questionId, Object.freeze({ questionId, blockNumber, itemIndex: index + 1 })];
+    })))),
+  }),
+}), []);
+assert.match(allBlockReviewHtml, /f120-review-block-separator/, 'all-block review nav marks block boundaries with separator rows');
+assert.match(allBlockReviewHtml, /border-top-color: #cbd5e1/, 'review page styles block boundary separator lines');
+
 const endExamBlockIds = Array.from({ length: 40 }, (_item, index) => `webfred:USMLE:Block-1:endexam-q${index + 1}`);
 let openedReviewHtml = '';
 const endExamReviewResult = await openReviewTab({

@@ -6,6 +6,9 @@ Phase 11 live checks use Playwright CLI and structural assertions only. They mus
 
 - `npm run check` — builds `dist/free120-helper.user.js`, runs `node --check`, then runs all synthetic module tests.
 - `npm run live:validate` — runs the default Step 1 Block 3 Playwright CLI validation in installed Microsoft Edge.
+- `npm run live:validate -- --mode=step1-all-blocks` or `npm run live:validate:step1-all-blocks` — runs the real official NBME Orientation Step 1 All Blocks validation.
+- `npm run live:validate -- --mode=real-step1-all-blocks` or `npm run live:validate:real-step1-all-blocks` — alias for the same real Step 1 All Blocks validation.
+- `npm run live:validate -- --mode=synthetic-step1-all-blocks` or `npm run live:validate:synthetic-step1-all-blocks` — runs the synthetic official-origin Step 1 All Blocks fixture.
 - `npm run live:validate -- --mode=smoke` — runs the older launch + single-question synthetic smoke path.
 
 ## Current coverage
@@ -21,6 +24,18 @@ Default `step1-block3` mode uses Playwright CLI with `--browser=msedge` and offi
 - Step 1 Block 3 Q8 image/video resources are cached and render from `data:` URLs.
 - Step 1 Block 3 Q40 interactive media metadata is captured and renders playable cached media.
 
+`step1-all-blocks` / `real-step1-all-blocks` mode additionally covers the official NBME Orientation site, not mocked routes:
+
+- Opens the real `https://orientation.nbme.org/Launch/USMLE` launch page and selects the native “Step 1 All Blocks” option.
+- Runs launch-page QBank capture for all three real Step 1 blocks (`STPF1C0137`, `STPF1C0138`, `STPF1C0139`), totaling 120 snapshots and 120 known correct answers.
+- Launches the real WebFRED all-block exam, answers all 120 items across Blocks 1–3 with seeded random selections, and uses the native Start Next Block flow between blocks.
+- Completed all-block attempt remains review-ready with 120 question ids/responses, 120 snapshots, complete QBank answer-key matching, and per-block metadata/progress of 40/40 for Blocks 1, 2, and 3.
+- Local Review mode renders all 120 questions across three blocks.
+- Every review question has stored answer inputs, exactly one correct-answer marker, and the expected selected option available.
+- Every review selected option exactly matches the seeded random option chosen during the real WebFRED exam.
+
+`synthetic-step1-all-blocks` mode covers the same all-block helper invariants against mocked official-origin launch/WebFRED routes, without using real NBME content.
+
 Smoke mode still covers:
 
 - Launch page detection at `https://orientation.nbme.org/Launch/USMLE`.
@@ -35,7 +50,7 @@ Smoke mode still covers:
 
 ## Manual live-site notes
 
-On 2026-05-05, the official launch page loaded and exposed the expected Step 1/2/3 choices. Starting Step 1 Block 1 from this environment returned a launch-service response without `examSession`, so full live navigation to WebFRED could not complete. `npm run live:validate` therefore keeps official-site checks to launch-page structure and uses synthetic WebFRED markup for active-exam workflow checks. Re-run full manual QA in Chrome/Tampermonkey when the official launch service returns a valid session.
+On 2026-05-12, the official launch page loaded and exposed Step 1 All Blocks. The real all-block validation launched official WebFRED, answered 120 items across Blocks 1–3, preserved 40/40 progress per block, and rendered a 120-question local review. Do not commit NBME text, screenshots, or captured local storage from these runs.
 
 ## Manual QA checklist
 

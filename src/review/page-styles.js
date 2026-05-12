@@ -38,8 +38,11 @@ const REVIEW_PAGE_CSS = `
     min-height: 28px; padding: 4px 6px; border-radius: 6px; cursor: pointer; user-select: none;
     border: 1px solid transparent;
   }
+  ol#leftnav > li.f120-review-block-separator { border-top-color: #cbd5e1; border-top-left-radius: 0; border-top-right-radius: 0; margin-top: 9px; padding-top: 10px; }
   ol#leftnav > li:hover { background: #f8fafc; border-color: #dbeafe; }
+  ol#leftnav > li.f120-review-block-separator:hover { border-top-color: #93c5fd; }
   ol#leftnav > li.currentitem { background: #dbeafe; border-color: #60a5fa; font-weight: 800; }
+  ol#leftnav > li.currentitem.f120-review-block-separator { border-top-color: #2563eb; }
   .ans_status { width: 12px; height: 12px; border-radius: 999px; border: 1px solid #94a3b8; display: inline-block; }
   .ans_status.f120-review-answered { background: #94a3b8; }
   .f120-review-nav-status, .f120-review-option-status {

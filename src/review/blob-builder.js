@@ -368,6 +368,9 @@ function rebaseAttemptForReviewBlock(attempt, blockNumber) {
 
 function chooseReviewBlockRepairNumber(attempt, ownSnapshots = []) {
   const metadataBlockNumbers = getAttemptMetadataBlockNumbers(attempt);
+  if (metadataBlockNumbers.length > 1) {
+    return 0;
+  }
   const recordedBlockNumber = getRecordedReviewBlockNumber(attempt);
   if (recordedBlockNumber && metadataBlockNumbers.length === 1 && metadataBlockNumbers[0] !== recordedBlockNumber) {
     return recordedBlockNumber;
@@ -1292,8 +1295,11 @@ function buildReviewRuntimeScript(model) {
     const nav = qs('ol#leftnav');
     const visible = visibleQuestions();
     replaceChildren(nav, []);
-    visible.forEach((question) => {
+    visible.forEach((question, index) => {
+      const previousQuestion = index > 0 ? visible[index - 1] : null;
+      const startsNewBlock = previousQuestion && Number(previousQuestion.blockNumber || 0) !== Number(question.blockNumber || 0);
       const row = el('li', { attrs: { tabindex: '0', role: 'button', 'data-question-id': question.questionId, 'aria-label': 'Review item ' + question.itemIndex + ' ' + question.status } });
+      if (startsNewBlock) row.classList.add('f120-review-block-separator');
       if (question.questionId === state.currentQuestionId) row.classList.add('currentitem');
       row.appendChild(el('span', { className: 'ans_status ' + (question.selectedAnswerId ? 'f120-review-answered' : ''), attrs: { 'aria-hidden': 'true' } }));
       row.appendChild(el('span', { className: 'f120-review-nav-status f120-review-nav-status--' + question.status, text: STATUS_SYMBOL[question.status] || '•' }));

@@ -939,6 +939,87 @@ assert.equal(patch.source.progress.overall.answered, 2);
 assert.equal(patch.source.itemMetadataByQuestionId.q1.componentId, 'component-q1');
 assert.equal(patch.answerTimeline.length, 1);
 
+const allBlockTrackingPreviousItems = [1, 2].flatMap((blockNumber) => Array.from({ length: 2 }, (_item, index) => Object.freeze({
+  questionId: `all-track-b${blockNumber}-q${index + 1}`,
+  componentId: `all-track-b${blockNumber}-component-${index + 1}`,
+  medleyId: `all-track-medley-${blockNumber}`,
+  blockNumber,
+  itemIndex: index + 1,
+})));
+const allBlockTrackingCurrentItems = Array.from({ length: 2 }, (_item, index) => Object.freeze({
+  questionId: `all-track-b3-q${index + 1}`,
+  componentId: `all-track-b3-component-${index + 1}`,
+  medleyId: 'all-track-medley-3',
+  blockNumber: 3,
+  itemIndex: index + 1,
+}));
+const allBlockTrackingPatch = buildTrackingAttemptPatch(
+  createSyntheticAttempt({
+    id: 'attempt-all-blocks-tracking-progress',
+    launchedScope: Object.freeze({ mode: 'all', blockCount: 3 }),
+    source: Object.freeze({ itemMetadataByQuestionId: Object.freeze(Object.fromEntries(allBlockTrackingPreviousItems.map((item) => [item.questionId, item]))) }),
+    questionIds: allBlockTrackingPreviousItems.map((item) => item.questionId),
+    questionCount: 4,
+    responses: Object.fromEntries(allBlockTrackingPreviousItems.map((item) => [item.questionId, 'A'])),
+  }),
+  createSyntheticAdapterState({
+    launchedScope: Object.freeze({ mode: 'all', blockCount: 3 }),
+    currentBlock: 3,
+    blockCount: 3,
+    itemCount: 2,
+    currentItem: Object.freeze({ ...allBlockTrackingCurrentItems[1], selectedAnswerId: 'B', current: true }),
+    itemList: Object.freeze(allBlockTrackingCurrentItems),
+    answers: Object.freeze({ 'all-track-b3-q1': 'B', 'all-track-b3-q2': 'B' }),
+    marks: Object.freeze({}),
+  }),
+  allBlockTrackingCurrentItems,
+  allBlockTrackingCurrentItems[1],
+  { responses: { ...Object.fromEntries(allBlockTrackingPreviousItems.map((item) => [item.questionId, 'A'])), 'all-track-b3-q1': 'B', 'all-track-b3-q2': 'B' }, changes: [] },
+  {},
+  [],
+  null,
+  'all-block-progress',
+  { metadataItemList: [...allBlockTrackingPreviousItems, ...allBlockTrackingCurrentItems] }
+);
+assert.equal(allBlockTrackingPatch.questionCount, 6, 'all-block tracking keeps previous and current block question ids');
+assert.deepEqual(Object.fromEntries(Object.entries(allBlockTrackingPatch.source.progress.byBlock).map(([key, block]) => [key, block.total])), { 1: 2, 2: 2, 3: 2 });
+assert.deepEqual(allBlockTrackingPatch.blockMetadata.map((block) => [block.blockNumber, block.itemCount, block.answeredCount]), [[1, 3, 2], [2, 2, 2], [3, 2, 2]]);
+
+const allBlockTrackingPatchWithStaleResponses = buildTrackingAttemptPatch(
+  createSyntheticAttempt({
+    id: 'attempt-all-blocks-tracking-stale-responses',
+    launchedScope: Object.freeze({ mode: 'all', blockCount: 3 }),
+    source: Object.freeze({ itemMetadataByQuestionId: Object.freeze(Object.fromEntries(allBlockTrackingPreviousItems.map((item) => [item.questionId, item]))) }),
+    questionIds: allBlockTrackingPreviousItems.map((item) => item.questionId),
+    questionCount: 4,
+    responses: {
+      ...Object.fromEntries(allBlockTrackingPreviousItems.map((item) => [item.questionId, 'A'])),
+      'stale-dom-fallback-response': 'D',
+    },
+  }),
+  createSyntheticAdapterState({
+    launchedScope: Object.freeze({ mode: 'all', blockCount: 3 }),
+    currentBlock: 3,
+    blockCount: 3,
+    itemCount: 2,
+    currentItem: Object.freeze({ ...allBlockTrackingCurrentItems[1], selectedAnswerId: 'B', current: true }),
+    itemList: Object.freeze(allBlockTrackingCurrentItems),
+    answers: Object.freeze({ 'all-track-b3-q1': 'B', 'all-track-b3-q2': 'B' }),
+    marks: Object.freeze({}),
+  }),
+  allBlockTrackingCurrentItems,
+  allBlockTrackingCurrentItems[1],
+  { responses: { ...Object.fromEntries(allBlockTrackingPreviousItems.map((item) => [item.questionId, 'A'])), 'all-track-b3-q1': 'B', 'all-track-b3-q2': 'B', 'stale-dom-fallback-response': 'D' }, changes: [] },
+  {},
+  [],
+  null,
+  'all-block-progress-stale-response',
+  { metadataItemList: [...allBlockTrackingPreviousItems, ...allBlockTrackingCurrentItems] }
+);
+assert.equal(Object.keys(allBlockTrackingPatchWithStaleResponses.responses).length, 6, 'all-block tracking filters stale responses that are outside tracked question ids');
+assert.equal(allBlockTrackingPatchWithStaleResponses.responses['stale-dom-fallback-response'], undefined, 'stale all-block response key is removed');
+assert.equal(allBlockTrackingPatchWithStaleResponses.source.progress.overall.answered, 6, 'all-block progress only counts tracked question responses');
+
 const scopedBlockOneItems = Array.from({ length: 40 }, (_item, index) => {
   const itemIdentity = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', medleyId: 'shared-medley', componentId: `component-${index + 1}`, blockNumber: 1, itemIndex: index + 1 });
   return Object.freeze({ questionId: itemIdentity.questionId, componentId: itemIdentity.componentId, medleyId: itemIdentity.medleyId, blockNumber: 1, itemIndex: index + 1 });

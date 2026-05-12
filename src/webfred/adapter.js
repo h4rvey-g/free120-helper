@@ -65,6 +65,22 @@ function safeElementText(element) {
   }
 }
 
+function safeVisibleText(element) {
+  if (!element) {
+    return '';
+  }
+  try {
+    return normalizeString(element.innerText || element.textContent || '', '');
+  } catch (_error) {
+    return safeElementText(element);
+  }
+}
+
+function safeSmallPositiveInteger(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 && parsed < 1000 ? parsed : fallback;
+}
+
 function safeAttribute(element, attributeName) {
   if (!element || typeof element.getAttribute !== 'function') {
     return '';
@@ -569,10 +585,13 @@ function extractNavigationStateFromDom(adapterDocument, adapterWindow) {
     const className = normalizeString(item.className, '').toLowerCase();
     return className.includes('currentitem') || className.includes('current') || safeAttribute(item, 'aria-current') === 'true';
   });
-  const bodyText = safeElementText(adapterDocument.body || adapterDocument.documentElement);
-  const blockMatch = bodyText.match(/Block\s+(\d+)\s*(?:of|\/)\s*(\d+)/i) || bodyText.match(/Block\s+(\d+)/i);
-  const currentBlock = blockMatch ? coercePositiveInteger(blockMatch[1], 0) : 0;
-  const blockCount = blockMatch && blockMatch[2] ? coercePositiveInteger(blockMatch[2], 0) : 0;
+  const bodyText = safeVisibleText(adapterDocument.body || adapterDocument.documentElement);
+  const blockMatch = bodyText.match(/Block\s*:\s*(\d{1,3})\s*(?:of|\/)\s*(\d{1,3})(?!\d)/i)
+    || bodyText.match(/Block\s+(\d{1,3})\s*(?:of|\/)\s*(\d{1,3})(?!\d)/i)
+    || bodyText.match(/Block\s*:\s*(\d{1,3})(?!\d)/i)
+    || bodyText.match(/Block\s+(\d{1,3})(?!\d)/i);
+  const currentBlock = blockMatch ? safeSmallPositiveInteger(blockMatch[1], 0) : 0;
+  const blockCount = blockMatch && blockMatch[2] ? safeSmallPositiveInteger(blockMatch[2], 0) : 0;
 
   return Object.freeze({
     currentBlock,
@@ -1299,7 +1318,13 @@ function normalizeLaunchedScopeFromAngular(roots, fallbackScope) {
   ], { maxDepth: 2 });
   const scope = isPlainObject(rawScope) ? safeJsonCompatibleValue(rawScope) : {};
   const fallback = isPlainObject(fallbackScope) ? fallbackScope : {};
-  const blockMapDefinition = inferSingleBlockDefinitionFromBlockMap(findFirstSemanticValue(roots, ['blockMap'], { maxDepth: 4 }));
+  const rawBlockMap = findFirstSemanticValue(roots, ['blockMap'], { maxDepth: 4 });
+  const blockMapEntries = valueToArray(rawBlockMap).filter(isReadableObject);
+  const inferredBlockCount = coercePositiveInteger(
+    findFirstSemanticValue(roots, ['blockCount', 'numberOfBlocks', 'totalBlocks', 'blocksCount'], { maxDepth: 3 }),
+    blockMapEntries.length
+  );
+  const blockMapDefinition = inferSingleBlockDefinitionFromBlockMap(rawBlockMap);
   const rawScopeDisplayName = isReadableObject(rawScope) && readCandidateProperty(rawScope, ['testDefinitionDisplayName', 'displayName', 'blockName', 'sectionName', 'name']);
   const semanticDisplayName = findFirstSemanticValue(roots, ['testDefinitionDisplayName', 'blockName', 'sectionName', 'displayName'], { maxDepth: 3 });
   const rawDisplayName = firstNonEmpty([
@@ -1332,7 +1357,9 @@ function normalizeLaunchedScopeFromAngular(roots, fallbackScope) {
       isReadableObject(rawScope) && readCandidateProperty(rawScope, ['mode', 'examMode', 'testMode']),
       findFirstSemanticValue(roots, ['mode', 'examMode', 'testMode'], { maxDepth: 2 }),
       fallback.mode,
+      inferredBlockCount > 1 ? 'all' : '',
     ]),
+    blockCount: inferredBlockCount || coercePositiveInteger(fallback.blockCount || fallback.blocks || fallback.totalBlocks, 0),
     block: firstNonEmpty([explicitBlock, blockFromText]),
     testDefinitionName: rawTestDefinitionName,
     testDefinitionDisplayName: rawDisplayName,
@@ -1470,7 +1497,7 @@ function selectAngularItemsForCurrentBlock(rawList, currentBlock, domState = nul
   const domItemCount = coercePositiveInteger(domState && domState.itemCount, 0);
   if (domItemCount > 0 && rawItems.length > domItemCount) {
     const startIndex = (blockNumber - 1) * domItemCount;
-    if (startIndex >= 0 && startIndex < rawItems.length) {
+    if (startIndex >= 0 && startIndex + domItemCount <= rawItems.length) {
       return rawItems.slice(startIndex, startIndex + domItemCount);
     }
     return rawItems.slice(0, domItemCount);

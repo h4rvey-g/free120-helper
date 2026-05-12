@@ -268,10 +268,15 @@ function buildEndExamCompletionAdapterState(attempt, adapterState = null) {
     || coerceNonNegativeInteger(adapterState && adapterState.currentBlock, 0)
     || 1;
   const existingTerminal = isObject(adapterState && adapterState.terminalState) ? adapterState.terminalState : {};
+  const attemptItemList = buildItemListFromAttemptMetadata(attempt);
+  const adapterItemList = Array.isArray(adapterState && adapterState.itemList) ? adapterState.itemList : [];
+  const completionItemList = attemptItemList.length > adapterItemList.length ? attemptItemList : adapterItemList;
   return Object.freeze({
     ...(isObject(adapterState) ? adapterState : {}),
     currentBlock,
     blockCount,
+    itemCount: Math.max(completionItemList.length, coerceNonNegativeInteger(adapterState && adapterState.itemCount, 0), coerceNonNegativeInteger(attempt && attempt.questionCount, 0)),
+    itemList: Object.freeze(completionItemList),
     terminalState: Object.freeze({
       ...existingTerminal,
       isTerminal: true,

@@ -857,7 +857,7 @@ function getExpectedSingleReviewItemCount(attempt) {
 }
 
 function shouldUseReviewProgressScope(attempt, progressQuestionIds) {
-  if (!progressQuestionIds.length) {
+  if (!progressQuestionIds.length || launchedScopeSuggestsMultipleBlocks(attempt)) {
     return false;
   }
   const expectedCount = getExpectedSingleReviewItemCount(attempt) || getReviewProgressBlockTotal(attempt);
