@@ -99,11 +99,12 @@ function normalizeDisplayText(value) {
 
 function extractStepLabel(value) {
   const text = normalizeDisplayText(value);
-  const match = text.match(/\bStep\s*(1|2\s*CK|3)\b/i);
+  const match = text.match(/\bStep\s*(1|2(?:\s*CK)?|3)\b/i);
   if (match) {
-    return `Step ${match[1].replace(/\s+/g, ' ').toUpperCase().replace(/^1$|^3$/, (entry) => entry)}`;
+    const stepNumber = match[1].replace(/\s+/g, ' ').toUpperCase().charAt(0);
+    return stepNumber === '2' ? 'Step 2 CK' : `Step ${stepNumber}`;
   }
-  const codeMatch = text.match(/\bSTPF\s*(1|2|3)\b/i);
+  const codeMatch = text.match(/\b(?:N\s*)?S\s*T\s*P\s*F\s*(1|2|3)\b/i);
   if (!codeMatch) {
     return '';
   }
@@ -122,6 +123,93 @@ function formatBlockLabel(value) {
     return `Block ${blockNumber}`;
   }
   return /^block\b/i.test(text) ? text : '';
+}
+
+function textSuggestsAllBlocks(value) {
+  const text = normalizeDisplayText(value);
+  return /\ball\s+blocks?\b/i.test(text)
+    || /\b(?:all|full|entire|whole|complete)\b/i.test(text);
+}
+
+function launchedScopeSuggestsAllBlocks(scope) {
+  if (!isPlainObject(scope)) {
+    return false;
+  }
+  const blockCount = coercePositiveInteger(scope.blockCount || scope.blocks || scope.totalBlocks, 0);
+  const modeText = [
+    scope.mode,
+    scope.testMode,
+    scope.scope,
+    scope.launchMode,
+    scope.deliveryMode,
+  ].join(' ');
+  const explicitBlockNumbers = uniqueStrings([
+    scope.block,
+    scope.selectedBlock,
+    scope.launchedBlock,
+  ].map((value) => extractBlockNumber(value) || coercePositiveInteger(value, 0))).filter(Boolean);
+  const selectionText = [
+    scope.block,
+    scope.selectedBlock,
+    scope.launchedBlock,
+    scope.testDefinitionDisplayName,
+    scope.displayName,
+    scope.section,
+    scope.testDefinitionName,
+  ].join(' ');
+  const allByMode = textSuggestsAllBlocks(modeText);
+  const allBySelection = /\ball\s+blocks?\b/i.test(normalizeDisplayText(selectionText));
+  if (explicitBlockNumbers.length && !allByMode && !allBySelection) {
+    return false;
+  }
+  return blockCount > 1 || allByMode || allBySelection;
+}
+
+function attemptSuggestsAllBlocks(attempt) {
+  if (!isObject(attempt)) {
+    return false;
+  }
+  const scope = isPlainObject(attempt.launchedScope) ? attempt.launchedScope : {};
+  const completionScope = isPlainObject(attempt.source && attempt.source.completion && attempt.source.completion.scope)
+    ? attempt.source.completion.scope
+    : {};
+  const terminal = isPlainObject(attempt.source && attempt.source.terminalState)
+    ? attempt.source.terminalState
+    : (isPlainObject(attempt.source && attempt.source.completion && attempt.source.completion.terminalState)
+      ? attempt.source.completion.terminalState
+      : {});
+  return launchedScopeSuggestsAllBlocks(scope)
+    || launchedScopeSuggestsAllBlocks(completionScope)
+    || deriveBlockCount(attempt) > 1
+    || Boolean(completionScope.isAllBlockLaunch || completionScope.allByMode)
+    || (Array.isArray(completionScope.launchedBlockNumbers) && completionScope.launchedBlockNumbers.length > 1)
+    || (Array.isArray(terminal.completedBlockNumbers) && terminal.completedBlockNumbers.length > 1);
+}
+
+function stripGenericExamDescriptorText(value) {
+  let text = normalizeDisplayText(value);
+  if (!text || isGenericExamPart(text)) {
+    return '';
+  }
+  text = text
+    .replace(/\b(?:NBME\s+)?Exam\s+Driver\b/gi, ' ')
+    .replace(/\bUSMLE\b/gi, ' ')
+    .replace(/\b(?:N\s*)?S\s*T\s*P\s*F\s*(?:1|2|3)[A-Z0-9-]*\b/gi, ' ')
+    .replace(/\bStep\s*(?:1|2(?:\s*CK)?|3)\b/gi, ' ')
+    .replace(/\bBlocks?\s*\d+\b/gi, ' ')
+    .replace(/\bAll\s+Blocks?\b/gi, ' ')
+    .replace(/\bStep\b/gi, ' ')
+    .replace(/[·|/_,-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text || isGenericExamPart(text) || /^(?:exam|driver|block|blocks?|all)$/i.test(text)) {
+    return '';
+  }
+  return text;
+}
+
+function examPartKey(value) {
+  return normalizeDisplayText(value).toLowerCase();
 }
 
 function isGenericExamPart(value) {
@@ -151,10 +239,14 @@ function deriveAttemptStepLabel(attempt) {
 }
 
 function deriveAttemptBlockLabel(attempt, options = {}) {
-  const identity = isPlainObject(attempt && attempt.examIdentity) ? attempt.examIdentity : {};
-  const scope = isPlainObject(attempt && attempt.launchedScope) ? attempt.launchedScope : {};
-  const launchDefinition = getAttemptLaunchDefinition(attempt);
-  const metadata = Array.isArray(attempt && attempt.blockMetadata) ? attempt.blockMetadata : [];
+  const source = isObject(attempt) ? attempt : {};
+  const identity = isPlainObject(source.examIdentity) ? source.examIdentity : {};
+  const scope = isPlainObject(source.launchedScope) ? source.launchedScope : {};
+  const launchDefinition = getAttemptLaunchDefinition(source);
+  const metadata = Array.isArray(source.blockMetadata) ? source.blockMetadata : [];
+  if (attemptSuggestsAllBlocks(source)) {
+    return 'All Blocks';
+  }
   const displayText = normalizeDisplayText([
     scope.testDefinitionDisplayName,
     scope.displayName,
@@ -163,7 +255,7 @@ function deriveAttemptBlockLabel(attempt, options = {}) {
     metadata.find((block) => normalizeDisplayText(block && block.label))?.label,
   ].find((value) => normalizeDisplayText(value)) || '');
   if (options.includeStep && extractStepLabel(displayText) && extractBlockNumber(displayText)) {
-    return displayText;
+    return `${extractStepLabel(displayText)} ${formatBlockLabel(displayText)}`;
   }
   const explicit = formatBlockLabel(scope.block || scope.selectedBlock || scope.launchedBlock);
   if (explicit) {
@@ -188,24 +280,50 @@ function firstSpecificExamName(attempt) {
     scope.exam,
     launchDefinition.examDisplayName,
     launchDefinition.examName,
-  ].map((value) => normalizeDisplayText(value)).find((value) => value && !isGenericExamPart(value) && !extractBlockNumber(value)) || '';
+  ].map((value) => {
+    const text = normalizeDisplayText(value);
+    if (!text || isGenericExamPart(text) || textSuggestsAllBlocks(text)) {
+      return '';
+    }
+    const stripped = stripGenericExamDescriptorText(text);
+    if (stripped) {
+      return stripped;
+    }
+    return extractBlockNumber(text) ? '' : text;
+  }).find((value) => normalizeDisplayText(value)) || '';
 }
 
 function summarizeAttemptExam(attempt) {
   const source = isObject(attempt) ? attempt : {};
   const identity = isPlainObject(source.examIdentity) ? source.examIdentity : {};
+  const scope = isPlainObject(source.launchedScope) ? source.launchedScope : {};
+  const launchDefinition = getAttemptLaunchDefinition(source);
   const step = deriveAttemptStepLabel(source);
   const examName = firstSpecificExamName(source);
   const block = deriveAttemptBlockLabel(source);
-  const fallbackParts = uniqueStrings([identity.program, identity.examName, identity.section, identity.formName]).filter((part) => {
+  const fallbackParts = uniqueStrings([
+    identity.program,
+    identity.examName,
+    identity.section,
+    identity.formName,
+    scope.program,
+    scope.examName,
+    scope.exam,
+    scope.testDefinitionDisplayName,
+    scope.displayName,
+    launchDefinition.examDisplayName,
+    launchDefinition.examName,
+    launchDefinition.testDefinitionDisplayName,
+  ].map(stripGenericExamDescriptorText)).filter((part) => {
     const text = normalizeDisplayText(part);
+    const key = examPartKey(text);
     const stepBlockText = normalizeDisplayText(`${step} ${block}`);
     return text
       && !isGenericExamPart(text)
-      && text !== step
-      && text !== examName
-      && text !== block
-      && (!stepBlockText || text !== stepBlockText);
+      && key !== examPartKey(step)
+      && key !== examPartKey(examName)
+      && key !== examPartKey(block)
+      && (!stepBlockText || key !== examPartKey(stepBlockText));
   });
   const parts = uniqueStrings([step, examName, block, ...fallbackParts]);
   return parts.length ? parts.join(' · ') : 'Unknown exam';
@@ -611,7 +729,9 @@ function injectLaunchHistoryStyles(adapterDocument) {
       right: 14px;
       width: min(920px, calc(100vw - 28px));
       max-height: min(720px, calc(100vh - 84px));
-      overflow: auto;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
       pointer-events: auto;
       background: rgba(255, 255, 255, 0.99);
       color: #111827;
@@ -628,6 +748,7 @@ function injectLaunchHistoryStyles(adapterDocument) {
       justify-content: space-between;
       gap: 12px;
       padding: 14px 16px 10px;
+      flex: 0 0 auto;
       border-bottom: 1px solid rgba(15, 23, 42, 0.1);
       position: sticky;
       top: 0;
@@ -651,6 +772,7 @@ function injectLaunchHistoryStyles(adapterDocument) {
       align-items: center;
       gap: 8px;
       padding: 12px 16px;
+      flex: 0 0 auto;
       border-bottom: 1px solid rgba(15, 23, 42, 0.1);
       background: #f8fafc;
     }
@@ -741,6 +863,11 @@ function injectLaunchHistoryStyles(adapterDocument) {
     }
     .f120-launch-history__body {
       padding: 0;
+      min-height: 0;
+      overflow: hidden;
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
     }
     .f120-launch-history__empty {
       padding: 24px 16px;
@@ -750,10 +877,11 @@ function injectLaunchHistoryStyles(adapterDocument) {
     .f120-launch-history__table-wrap {
       overflow: auto;
       max-width: 100%;
+      flex: 1 1 auto;
     }
     .f120-launch-history__table {
       width: 100%;
-      min-width: 820px;
+      min-width: 780px;
       border-collapse: collapse;
       font-size: 12px;
     }
@@ -766,8 +894,8 @@ function injectLaunchHistoryStyles(adapterDocument) {
     }
     .f120-launch-history__table th {
       position: sticky;
-      top: 61px;
-      z-index: 1;
+      top: 0;
+      z-index: 2;
       background: #f8fafc;
       color: #334155;
       font-weight: 850;
@@ -820,15 +948,10 @@ function injectLaunchHistoryStyles(adapterDocument) {
       border-radius: 8px;
       font-size: 12px;
     }
-    .f120-launch-history__footer {
-      padding: 10px 16px 14px;
-      border-top: 1px solid rgba(15, 23, 42, 0.1);
-      color: #475569;
-      font-size: 12px;
-      background: #fff;
-    }
     .f120-launch-history__panel--qbank {
       width: min(560px, calc(100vw - 28px));
+      overflow: auto;
+      display: block;
     }
     .f120-launch-history__qbank-body {
       display: grid;
@@ -1080,7 +1203,7 @@ function buildLaunchHistoryDom(adapterDocument) {
   const table = createElement(adapterDocument, 'table', { className: 'f120-launch-history__table' });
   const thead = createElement(adapterDocument, 'thead');
   const headRow = createElement(adapterDocument, 'tr');
-  ['Date', 'Exam', 'Scope', 'Blocks', 'Duration', 'Score', 'Status', 'Actions'].forEach((label) => {
+  ['Date', 'Exam', 'Scope', 'Duration', 'Score', 'Status', 'Actions'].forEach((label) => {
     headRow.appendChild(createElement(adapterDocument, 'th', { text: label }));
   });
   thead.appendChild(headRow);
@@ -1093,11 +1216,6 @@ function buildLaunchHistoryDom(adapterDocument) {
     text: 'No Free120 Helper attempts stored yet.',
   });
   body.append(tableWrap, empty);
-
-  const footer = createElement(adapterDocument, 'div', {
-    className: 'f120-launch-history__footer',
-    text: 'Review/export/import open only from local IndexedDB data. Full backup includes stored question snapshots and may contain NBME content.',
-  });
 
   const qbankPanel = createElement(adapterDocument, 'section', {
     className: 'f120-launch-history__panel f120-launch-history__panel--qbank',
@@ -1158,7 +1276,7 @@ function buildLaunchHistoryDom(adapterDocument) {
   qbankBody.append(qbankStorage, qbankStepOptions, qbankActions, qbankMessage);
   qbankPanel.append(qbankHeader, qbankBody);
 
-  panel.append(header, toolbar, body, footer);
+  panel.append(header, toolbar, body);
   root.append(triggerGroup, backdrop, panel, qbankPanel);
 
   return Object.freeze({
@@ -1444,7 +1562,6 @@ function createLaunchHistory(options = {}) {
       appendMainSubCell(adapterDocument, row, rowModel.date, rowModel.id);
       appendMainSubCell(adapterDocument, row, rowModel.exam, `${rowModel.questionCount} questions`);
       appendCellText(adapterDocument, row, rowModel.launchedScope);
-      appendCellText(adapterDocument, row, rowModel.blockCount);
       appendCellText(adapterDocument, row, rowModel.duration);
       appendCellText(adapterDocument, row, rowModel.score);
 

@@ -194,6 +194,28 @@ const genericDriverHistoryRow = formatHistoryAttemptRow({
 });
 assert.equal(genericDriverHistoryRow.exam, 'Step 1 · Block 2');
 assert.equal(genericDriverHistoryRow.launchedScope, 'test · Step 1 Block 2');
+const allBlocksHistoryRow = formatHistoryAttemptRow({
+  ...historyAttempt,
+  id: 'attempt-step1-all-blocks',
+  questionIds: ['q1', 'q2', 'q3', 'q4', 'q5', 'q6'],
+  questionCount: 6,
+  examIdentity: Object.freeze({ program: 'USMLE', examName: 'NBME Exam Driver', section: 'Step 1 Block 1' }),
+  launchedScope: Object.freeze({ mode: 'all', blockCount: 2, testDefinitionDisplayName: 'Step 1 All Blocks' }),
+  blockMetadata: Object.freeze([
+    Object.freeze({ blockNumber: 1, itemCount: 3, label: 'Step 1 Block 1' }),
+    Object.freeze({ blockNumber: 2, itemCount: 3, label: 'Step 1 Block 2' }),
+  ]),
+});
+assert.equal(allBlocksHistoryRow.exam, 'Step 1 · All Blocks');
+const noisyStep2HistoryRow = formatHistoryAttemptRow({
+  ...historyAttempt,
+  id: 'attempt-noisy-step2-block2',
+  examIdentity: Object.freeze({ program: 'Step 2 CK', examName: 'Step NST PF 2 Block 2', section: 'Step 2 Block 2' }),
+  launchedScope: Object.freeze({ mode: 'test', block: '2', testDefinitionDisplayName: 'Step 2 CK Step NST PF 2 Block 2', section: 'Step 2 Block 2' }),
+  source: Object.freeze({ launchDefinition: Object.freeze({ testDefinitionDisplayName: 'Step 2 Block 2' }) }),
+  blockMetadata: Object.freeze([Object.freeze({ blockNumber: 2, itemCount: 3, label: 'Step 2 Block 2' })]),
+});
+assert.equal(noisyStep2HistoryRow.exam, 'Step 2 CK · Block 2');
 assert.equal(historyRow.score, '2/3 (66.7%)');
 assert.equal(historyRow.status, 'Completed');
 assert.equal(historyRow.reviewReady, true);
