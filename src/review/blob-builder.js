@@ -42,6 +42,10 @@ function statusSymbol(status) {
   }
 }
 
+function statusLabel(status) {
+  return status === GRADE_STATUS.OMITTED ? 'skipped' : normalizeString(status, 'unknown');
+}
+
 function scoreLabel(scoreSummary) {
   const score = scoreSummary && scoreSummary.overallScore ? scoreSummary.overallScore : null;
   if (!score) {
@@ -613,7 +617,7 @@ function buildScoreSummaryHtml(scoreSummary) {
     ['Overall', scoreLabel(scoreSummary)],
     ['Correct', `${Number(scoreSummary && scoreSummary.correct || 0)}`],
     ['Incorrect', `${Number(scoreSummary && scoreSummary.incorrect || 0)}`],
-    ['Omitted', `${Number(scoreSummary && scoreSummary.omitted || 0)}`],
+    ['Skipped', `${Number(scoreSummary && scoreSummary.omitted || 0)}`],
     ['Unknown', `${Number(scoreSummary && scoreSummary.unknown || 0)}`],
     ...perBlock.map((block) => [`Block ${Number(block && block.blockNumber || 0)}`, `${block && block.overallScore ? block.overallScore.label : '—'} (${block && block.overallScore ? block.overallScore.percent : 0}%)`]),
   ];
@@ -636,7 +640,7 @@ function buildStaticShell(model) {
               <option value="all">All</option>
               <option value="correct">Correct</option>
               <option value="incorrect">Incorrect</option>
-              <option value="omitted">Omitted</option>
+              <option value="omitted">Skipped</option>
               <option value="unknown">Unknown</option>
               <option value="marked">Marked</option>
             </select>
@@ -655,7 +659,7 @@ function buildStaticShell(model) {
               <button type="button" id="f120-review-prev">Previous</button>
               <button type="button" id="f120-review-next">Next</button>
             </div>
-            <span id="f120-review-current-status" class="f120-review-pill f120-review-pill--${escapeHtml(firstStatus)}">${firstQuestion ? `${escapeHtml(statusSymbol(firstStatus))} ${escapeHtml(firstStatus)}` : 'empty'}</span>
+            <span id="f120-review-current-status" class="f120-review-pill f120-review-pill--${escapeHtml(firstStatus)}">${firstQuestion ? `${escapeHtml(statusSymbol(firstStatus))} ${escapeHtml(statusLabel(firstStatus))}` : 'empty'}</span>
           </div>
           <section id="item" aria-label="Question review"><article id="content"><div id="medley"></div></article></section>
         </main>
@@ -721,6 +725,10 @@ function buildReviewRuntimeScript(model) {
     const l = text(left).toLowerCase();
     const r = text(right).toLowerCase();
     return Boolean(l && r && l === r);
+  }
+  function statusLabel(status) {
+    const value = text(status, 'unknown');
+    return value === 'omitted' ? 'skipped' : value;
   }
   function formatDuration(ms) {
     const value = Number(ms || 0);
@@ -1763,7 +1771,7 @@ function buildReviewRuntimeScript(model) {
       compact.appendChild(el('div', { className: 'f120-review-empty', text: 'No matching item.' }));
       return;
     }
-    appendDetail(details, 'Status', question.status);
+    appendDetail(details, 'Status', statusLabel(question.status));
     appendDetail(details, 'Selected', question.selectedAnswerId || '—');
     appendDetail(details, 'Correct', question.correctAnswerId || '—');
     appendDetail(details, 'Marked', question.marked ? 'yes' : 'no');
@@ -1792,7 +1800,7 @@ function buildReviewRuntimeScript(model) {
     }
     label.textContent = 'Block ' + question.blockNumber + ' · Item ' + question.itemIndex;
     status.className = 'f120-review-pill f120-review-pill--' + question.status;
-    status.textContent = (STATUS_SYMBOL[question.status] || '•') + ' ' + question.status;
+    status.textContent = (STATUS_SYMBOL[question.status] || '•') + ' ' + statusLabel(question.status);
   }
   function getNavScrollContainer(nav) {
     return qs('nav.f120-review-leftnav') || (nav && nav.parentElement) || nav;
@@ -1814,7 +1822,7 @@ function buildReviewRuntimeScript(model) {
     visible.forEach((question, index) => {
       const previousQuestion = index > 0 ? visible[index - 1] : null;
       const startsNewBlock = previousQuestion && Number(previousQuestion.blockNumber || 0) !== Number(question.blockNumber || 0);
-      const row = el('li', { attrs: { tabindex: '0', role: 'button', 'data-question-id': question.questionId, 'aria-label': 'Review item ' + question.itemIndex + ' ' + question.status } });
+      const row = el('li', { attrs: { tabindex: '0', role: 'button', 'data-question-id': question.questionId, 'aria-label': 'Review item ' + question.itemIndex + ' ' + statusLabel(question.status) } });
       if (startsNewBlock) row.classList.add('f120-review-block-separator');
       if (question.questionId === state.currentQuestionId) row.classList.add('currentitem');
       row.appendChild(el('span', { className: 'ans_status ' + (question.selectedAnswerId ? 'f120-review-answered' : ''), attrs: { 'aria-hidden': 'true' } }));
