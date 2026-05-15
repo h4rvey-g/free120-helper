@@ -729,6 +729,12 @@ function buildReviewRuntimeScript(model) {
     const minutes = Math.floor(seconds / 60);
     return minutes + ':' + String(seconds % 60).padStart(2, '0');
   }
+  function formatAnswerChange(entry) {
+    const fromAnswerId = text(entry && entry.fromAnswerId);
+    const toAnswerId = text(entry && entry.toAnswerId);
+    if (!fromAnswerId || fromAnswerId === toAnswerId) return '';
+    return fromAnswerId + ' → ' + (toAnswerId || '—');
+  }
   function sortedBlockNumbers() {
     return Array.from(new Set(MODEL.questions.map((question) => Number(question.blockNumber || 1)).filter(Boolean))).sort((a, b) => a - b);
   }
@@ -1506,11 +1512,12 @@ function buildReviewRuntimeScript(model) {
       strikeouts.slice(0, 5).forEach((entry) => compact.appendChild(el('div', { text: text(entry.text || entry.html).slice(0, 180) })));
     }
     const timeline = Array.isArray(question.answerTimeline) ? question.answerTimeline : [];
-    if (timeline.length) {
+    const answerChanges = timeline.map(formatAnswerChange).filter(Boolean);
+    if (answerChanges.length) {
       compact.appendChild(el('strong', { text: 'Answer changes' }));
-      timeline.slice(-8).forEach((entry) => compact.appendChild(el('div', { text: (entry.changedAt || '') + ' · ' + (entry.fromAnswerId || '—') + ' → ' + (entry.toAnswerId || '—') })));
+      answerChanges.slice(-8).forEach((change) => compact.appendChild(el('div', { text: change })));
     } else {
-      compact.appendChild(el('div', { className: 'f120-review-empty', text: 'No answer-change timeline.' }));
+      compact.appendChild(el('div', { className: 'f120-review-empty', text: 'No answer changes.' }));
     }
   }
   function renderHeader(question) {
