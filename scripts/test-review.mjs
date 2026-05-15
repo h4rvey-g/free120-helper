@@ -579,6 +579,59 @@ const allBlockReviewModel = buildReviewModel(Object.freeze({
 }), []);
 assert.equal(allBlockReviewModel.questions.length, 120, 'all-block review does not get scoped to one progress block');
 assert.deepEqual(allBlockReviewModel.scoreSummary.perBlock.map((block) => [block.blockNumber, block.total]), [[1, 40], [2, 40], [3, 40]]);
+
+const step3AllBlockCounts = [[1, 38], [2, 39], [3, 30], [4, 30]];
+const step3DuplicateDropByBlock = Object.freeze({ 1: 1, 2: 3, 3: 1, 4: 2 });
+const getStep3RawItemIndex = (blockNumber, displayIndex) => {
+  const duplicateDropCount = step3DuplicateDropByBlock[blockNumber] || 0;
+  if (displayIndex >= 6 && displayIndex <= 5 + duplicateDropCount) {
+    return 5;
+  }
+  return displayIndex;
+};
+const step3DuplicatePositionIds = step3AllBlockCounts.flatMap(([blockNumber, count]) => (
+  Array.from({ length: count }, (_item, index) => `step3-all-b${blockNumber}-q${index + 1}`)
+));
+const step3DuplicatePositionModel = buildReviewModel(Object.freeze({
+  id: 'attempt-step3-all-blocks-duplicate-positions',
+  status: ATTEMPT_STATUS.COMPLETED,
+  launchedScope: Object.freeze({ mode: 'all', blockCount: 4, testDefinitionDisplayName: 'Step 3 All Blocks' }),
+  questionIds: Object.freeze(step3DuplicatePositionIds),
+  questionCount: step3DuplicatePositionIds.length,
+  responses: Object.freeze(Object.fromEntries(step3DuplicatePositionIds.map((questionId) => [questionId, 'A']))),
+  correctAnswers: Object.freeze(Object.fromEntries(step3DuplicatePositionIds.map((questionId) => [questionId, 'A']))),
+  blockMetadata: Object.freeze(step3AllBlockCounts.map(([blockNumber, count]) => Object.freeze({ blockNumber, itemCount: count, label: `Block ${blockNumber}` }))),
+  source: Object.freeze({
+    progress: Object.freeze({
+      byBlock: Object.freeze(Object.fromEntries(step3AllBlockCounts.map(([blockNumber, count]) => {
+        const ids = Array.from({ length: count }, (_item, index) => `step3-all-b${blockNumber}-q${index + 1}`);
+        return [blockNumber, Object.freeze({ blockNumber, answered: count, total: count, questionIds: Object.freeze(ids), answeredQuestionIds: Object.freeze(ids) })];
+      }))),
+    }),
+    itemMetadataByQuestionId: Object.freeze(Object.fromEntries(step3AllBlockCounts.flatMap(([blockNumber, count]) => (
+      Array.from({ length: count }, (_item, index) => {
+        const displayIndex = index + 1;
+        const questionId = `step3-all-b${blockNumber}-q${displayIndex}`;
+        return [questionId, Object.freeze({
+          questionId,
+          blockNumber,
+          itemIndex: getStep3RawItemIndex(blockNumber, displayIndex),
+          componentId: `step3-component-${blockNumber}-${displayIndex}`,
+          medleyId: `step3-medley-${blockNumber}`,
+        })];
+      })
+    )))),
+  }),
+}), []);
+assert.equal(step3DuplicatePositionModel.questions.length, 137, 'all-block review keeps Step 3 multipage-set items with duplicate raw itemIndex values');
+assert.deepEqual(step3DuplicatePositionModel.scoreSummary.perBlock.map((block) => [block.blockNumber, block.total]), [[1, 38], [2, 39], [3, 30], [4, 30]]);
+step3AllBlockCounts.forEach(([blockNumber, count]) => {
+  assert.deepEqual(
+    step3DuplicatePositionModel.questions.filter((question) => question.blockNumber === blockNumber).map((question) => question.itemIndex),
+    Array.from({ length: count }, (_item, index) => index + 1),
+    `review repairs Step 3 Block ${blockNumber} duplicate raw item positions to displayed order`
+  );
+});
 const allBlockReviewHtml = buildReviewHtml(Object.freeze({
   id: 'attempt-step1-all-blocks-review-html',
   status: ATTEMPT_STATUS.COMPLETED,

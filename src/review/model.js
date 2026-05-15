@@ -890,6 +890,57 @@ function selectSingleBlockReviewCandidates(attempt, questions) {
   return filtered.length ? filtered : list;
 }
 
+function getReviewAttemptOrder(question) {
+  return coercePositiveInteger(question && question._candidate && question._candidate.attemptIndex, 0);
+}
+
+function isTrustedStoredReviewQuestion(question) {
+  const candidate = question && question._candidate ? question._candidate : {};
+  return Boolean(candidate.fromAttemptQuestionIds && hasStoredReviewEvidence(question));
+}
+
+function repairTrustedDuplicateReviewPositions(questions) {
+  const list = arrayOrEmpty(questions);
+  const byBlock = new Map();
+  list.forEach((question) => {
+    const blockNumber = coercePositiveInteger(question && question.blockNumber, 1);
+    if (!byBlock.has(blockNumber)) {
+      byBlock.set(blockNumber, []);
+    }
+    byBlock.get(blockNumber).push(question);
+  });
+  const repairedByQuestionId = new Map();
+  Array.from(byBlock.entries()).forEach(([, blockQuestions]) => {
+    const trusted = blockQuestions.filter(isTrustedStoredReviewQuestion);
+    if (trusted.length < 2) {
+      return;
+    }
+    const trustedPositions = trusted.map((question) => coercePositiveInteger(question && question.itemIndex, 0)).filter(Boolean);
+    const hasDuplicateTrustedPositions = trustedPositions.length === trusted.length && new Set(trustedPositions).size < trusted.length;
+    if (!hasDuplicateTrustedPositions) {
+      return;
+    }
+    const orderedTrusted = trusted.slice().sort((left, right) => {
+      const leftOrder = getReviewAttemptOrder(left);
+      const rightOrder = getReviewAttemptOrder(right);
+      if (leftOrder && rightOrder && leftOrder !== rightOrder) {
+        return leftOrder - rightOrder;
+      }
+      if (left.itemIndex !== right.itemIndex) {
+        return left.itemIndex - right.itemIndex;
+      }
+      return normalizeString(left.questionId, '').localeCompare(normalizeString(right.questionId, ''));
+    });
+    orderedTrusted.forEach((question, index) => {
+      repairedByQuestionId.set(question.questionId, Object.freeze({ ...question, itemIndex: index + 1, _positionTrusted: true }));
+    });
+  });
+  if (!repairedByQuestionId.size) {
+    return list;
+  }
+  return sortReviewQuestions(list.map((question) => repairedByQuestionId.get(question.questionId) || question));
+}
+
 function stripReviewQuestionInternals(question) {
   const { _positionTrusted, _sourceBlockNumber, _candidate, ...publicQuestion } = question;
   return Object.freeze(publicQuestion);
@@ -919,7 +970,9 @@ function selectValidReviewQuestionIds(sourceAttempt, snapshots, scoreSummary) {
     ? reviewCandidates.filter((question) => progressAllowed.has(normalizeString(question && question.questionId, '')))
     : [];
   const scopedCandidates = progressScopedCandidates.length ? progressScopedCandidates : reviewCandidates;
-  return uniqueStrings(limitReviewQuestionsPerBlock(dedupeReviewPositions(selectSingleBlockReviewCandidates(sourceAttempt, scopedCandidates))).map((question) => question.questionId));
+  const blockScopedCandidates = selectSingleBlockReviewCandidates(sourceAttempt, scopedCandidates);
+  const positionRepairedCandidates = repairTrustedDuplicateReviewPositions(blockScopedCandidates);
+  return uniqueStrings(limitReviewQuestionsPerBlock(dedupeReviewPositions(positionRepairedCandidates)).map((question) => question.questionId));
 }
 
 function filterRecordToQuestionIds(record, questionIds) {
@@ -1051,7 +1104,7 @@ function buildReviewModel(attempt, snapshots = []) {
   const scoringQuestionIds = arrayOrEmpty(scoringAttempt.questionIds);
   const scoreSummary = buildAttemptScoreSummary(scoringAttempt, { reason: 'review-render-filtered' });
   const candidateByQuestionId = buildQuestionCandidateMap(scoringAttempt, snapshots, scoreSummary);
-  const questions = buildReviewQuestions(scoringAttempt, snapshots, scoreSummary, scoringQuestionIds, candidateByQuestionId)
+  const questions = repairTrustedDuplicateReviewPositions(buildReviewQuestions(scoringAttempt, snapshots, scoreSummary, scoringQuestionIds, candidateByQuestionId))
     .map(stripReviewQuestionInternals);
 
   return Object.freeze({

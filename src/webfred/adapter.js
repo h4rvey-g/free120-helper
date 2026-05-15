@@ -1371,9 +1371,25 @@ function normalizeLaunchedScopeFromAngular(roots, fallbackScope) {
   });
 }
 
+function parseAngularDisplayItemIndex(rawItem) {
+  const displayText = firstNonEmpty([
+    readCandidateProperty(rawItem, ['displayableName', 'displayName', 'label', 'title', 'caption']),
+  ]);
+  const normalized = normalizeString(displayText, '').replace(/\u00a0/g, ' ').trim();
+  if (!normalized || /\b(?:key|answer)\b/i.test(normalized)) {
+    return 0;
+  }
+  const exact = normalized.match(/^\D*(\d{1,3})\D*$/);
+  return exact ? coercePositiveInteger(exact[1], 0) : 0;
+}
+
 function normalizeAngularItemIndex(rawItem, fallbackIndex = 0) {
   const rawIndex = readCandidateProperty(rawItem, ['itemIndex', 'index', 'ordinal', 'position', 'number', 'sequence']);
   const fallback = coercePositiveInteger(fallbackIndex, 0);
+  const displayIndex = parseAngularDisplayItemIndex(rawItem);
+  if (displayIndex && fallback > 0 && displayIndex === fallback) {
+    return displayIndex;
+  }
   if (typeof rawIndex === 'number' && Number.isInteger(rawIndex) && rawIndex >= 0) {
     if (fallback > 0 && rawIndex === fallback - 1) {
       return fallback;
@@ -1387,7 +1403,7 @@ function normalizeAngularItemIndex(rawItem, fallbackIndex = 0) {
     }
     return parsed > 0 ? parsed : (fallback || 1);
   }
-  return fallback || 1;
+  return displayIndex || fallback || 1;
 }
 
 function normalizeAngularItem(rawItem, options = {}) {

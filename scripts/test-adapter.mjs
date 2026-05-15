@@ -178,6 +178,48 @@ assert.equal(realNbmeZeroBasedState.currentItem.questionId, realNbmeZeroBasedSta
 assert.equal(realNbmeZeroBasedState.currentItem.selectedAnswerId, 'B', 'real NBME currentResponse is captured as selected answer');
 assert.equal(realNbmeZeroBasedState.answers[realNbmeZeroBasedState.itemList[0].questionId], 'B', 'real NBME answer maps component-key answer object to trusted question id');
 
+const step3MultipageSetItems = [
+  { componentId: 'step3-component-1', medleyId: 'step3-medley-1', itemIndex: 0, displayableName: '\u00a01', answerable: true },
+  { componentId: 'step3-component-2', medleyId: 'step3-medley-2', itemIndex: 1, displayableName: '\u00a02', answerable: true },
+  { componentId: 'step3-set-component-1', medleyId: 'step3-set-medley', itemIndex: 1, subItemIndex: 0, displayableName: '\u00a03', setType: 'first-in-set', answerable: true },
+  { componentId: 'step3-set-component-2', medleyId: 'step3-set-medley', itemIndex: 1, subItemIndex: 1, displayableName: '\u00a04', setType: 'last-in-set', hidden: true, answerable: true },
+  { componentId: 'step3-component-5', medleyId: 'step3-medley-5', itemIndex: 2, displayableName: '\u00a05', answerable: true },
+  { componentId: '', medleyId: 'step3-key-medley', itemIndex: 3, displayableName: 'Key', answerable: false },
+];
+const step3MultipageSetNav = el('nav', {}, [el('ol', { id: 'leftnav' }, Array.from({ length: 5 }, (_entry, index) => (
+  el('li', index === 0 ? { class: 'currentitem', 'aria-current': 'true' } : {}, [el('span', { class: 'index' }, [String(index + 1)])])
+)))]);
+const step3MultipageSetBody = el('main', {}, [
+  step3MultipageSetNav,
+  el('section', { id: 'item' }, [el('article', { id: 'content' }, [el('div', { id: 'step3-medley-1', 'data-medley-id': 'step3-medley-1' }, [
+    el('div', { id: 'step3-item-1', 'data-component-id': 'step3-component-1' }, [
+      el('div', { class: 'NBExposition' }, ['Step 3 multipage set stem']),
+      el('div', { id: 'step3-component-1_div', class: 'NBOptionListComp answerbox' }, [choiceRows]),
+    ]),
+  ])])]),
+  el('div', {}, ['Block 1 of 1']),
+]);
+const step3MultipageSetDocument = createFakeDocument(step3MultipageSetBody, { title: 'NBME Exam Driver' });
+const step3MultipageSetWindow = createFakeWindow('https://orientation.nbme.org/webfred/#!/main');
+step3MultipageSetWindow.angular = {
+  element: () => ({
+    injector: () => ({
+      has: (name) => name === 'itemService',
+      get: () => ({
+        items: step3MultipageSetItems,
+        currItem: step3MultipageSetItems[0],
+        blockInfo: { currentBlock: 0, blockCount: 1, blockMap: [{ name: 'STPF3C0332D1A1', numberOfItems: 5, caption: 'FIP' }] },
+        config: { programName: 'USMLE' },
+      }),
+    }),
+  }),
+};
+const step3MultipageSetState = createWebfredSiteAdapter({ window: step3MultipageSetWindow, document: step3MultipageSetDocument, logger: { debug() {}, warn() {} } }).readState();
+assert.equal(step3MultipageSetState.itemList.length, 5, 'Step 3 multipage set keeps every answerable displayed item and excludes answer key');
+assert.deepEqual(step3MultipageSetState.itemList.map((entry) => entry.itemIndex), [1, 2, 3, 4, 5], 'Step 3 multipage set display numbers override repeated raw itemIndex values');
+assert.deepEqual(step3MultipageSetState.itemList.map((entry) => entry.componentId), ['step3-component-1', 'step3-component-2', 'step3-set-component-1', 'step3-set-component-2', 'step3-component-5']);
+assert.equal(new Set(step3MultipageSetState.itemList.map((entry) => `${entry.blockNumber}:${entry.itemIndex}`)).size, 5, 'Step 3 multipage set positions are unique for review mode');
+
 const navState = extractNavigationStateFromDom(fakeDocument, fakeWindow);
 assert.equal(navState.currentBlock, 1);
 assert.equal(navState.blockCount, 1);
