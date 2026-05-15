@@ -833,13 +833,34 @@ function buildReviewRuntimeScript(model) {
     const value = Number(entry && (entry.occurrence || entry.occurrenceIndex));
     return Number.isInteger(value) && value > 0 ? value : 0;
   }
-  function highlightEntriesForQuestion(question) {
+  function annotationEntryOptionIndex(entry) {
+    const value = Number(entry && (entry.optionIndex || entry.choiceIndex || entry.answerIndex));
+    return Number.isInteger(value) && value > 0 ? value : 0;
+  }
+  function annotationEntryOptionAnswerId(entry) {
+    return text(entry && (entry.optionAnswerId || entry.answerId || entry.choiceId || entry.optionId));
+  }
+  function annotationEntryOptionText(entry) {
+    return collapseReviewWhitespace(entry && (entry.optionText || entry.choiceText || entry.label));
+  }
+  function annotationEntriesForQuestion(question, kind) {
     const annotations = question && question.annotations && typeof question.annotations === 'object' ? question.annotations : {};
-    const highlights = Array.isArray(annotations.highlights) ? annotations.highlights : [];
+    const entries = Array.isArray(annotations[kind]) ? annotations[kind] : [];
     const seen = new Set();
-    return highlights.map((entry) => ({ text: collapseReviewWhitespace(annotationEntryText(entry)), occurrence: annotationEntryOccurrence(entry) })).filter((entry) => {
-      const key = entry.occurrence ? entry.text.toLowerCase() + '::' + entry.occurrence : entry.text.toLowerCase();
-      if (entry.text.length < 2 || seen.has(key)) return false;
+    return entries.map((entry) => {
+      const optionText = annotationEntryOptionText(entry);
+      const rawText = collapseReviewWhitespace(annotationEntryText(entry));
+      return {
+        text: kind === 'strikeouts' && rawText.length < 2 ? (optionText || rawText) : rawText,
+        occurrence: annotationEntryOccurrence(entry),
+        optionIndex: annotationEntryOptionIndex(entry),
+        optionAnswerId: annotationEntryOptionAnswerId(entry),
+        optionText,
+      };
+    }).filter((entry) => {
+      const keyParts = [entry.text.toLowerCase(), entry.optionIndex ? 'option-index:' + entry.optionIndex : '', entry.optionAnswerId ? 'answer:' + entry.optionAnswerId.toLowerCase() : '', entry.occurrence ? 'occurrence:' + entry.occurrence : ''];
+      const key = keyParts.filter(Boolean).join('::');
+      if ((entry.text.length < 2 && !(kind === 'strikeouts' && (entry.optionIndex || entry.optionAnswerId || entry.optionText))) || seen.has(key)) return false;
       seen.add(key);
       return true;
     }).sort((left, right) => {
@@ -848,6 +869,12 @@ function buildReviewRuntimeScript(model) {
       if (leftKey === rightKey) return right.occurrence - left.occurrence;
       return right.text.length - left.text.length;
     });
+  }
+  function highlightEntriesForQuestion(question) {
+    return annotationEntriesForQuestion(question, 'highlights');
+  }
+  function strikeoutEntriesForQuestion(question) {
+    return annotationEntriesForQuestion(question, 'strikeouts');
   }
   function isAnnotatableTextNode(node) {
     if (!node || !text(node.nodeValue || node.textContent)) return false;
@@ -966,6 +993,97 @@ function buildReviewRuntimeScript(model) {
       highlightTextInQuestion(root, entry.text, { occurrence: entry.occurrence });
     });
   }
+  function reviewContainsCollapsed(haystack, needle) {
+    const source = collapseReviewWhitespace(haystack).toLowerCase();
+    const target = collapseReviewWhitespace(needle).toLowerCase();
+    return Boolean(source && target && source.includes(target));
+  }
+  function rowAnswerTokens(row, question, index) {
+    const input = row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
+    const choice = question && question.snapshot && Array.isArray(question.snapshot.choices) ? question.snapshot.choices[index] : null;
+    return answerIdCandidates(rowInputAnswerId(input, row, index)).concat(answerIdCandidates(choice && choice.id), answerIdCandidates(choice && choice.index));
+  }
+  function reviewTextOverlaps(left, right) {
+    return reviewContainsCollapsed(left, right) || reviewContainsCollapsed(right, left);
+  }
+  function rowMatchesStrikeoutEntry(row, question, entry, index) {
+    if (entry.optionIndex && entry.optionIndex === index + 1) return true;
+    const optionAnswerCandidates = answerIdCandidates(entry.optionAnswerId);
+    if (optionAnswerCandidates.length && optionAnswerCandidates.some((candidate) => rowAnswerTokens(row, question, index).includes(candidate))) return true;
+    if (entry.optionText && reviewTextOverlaps(row.textContent, entry.optionText)) return true;
+    return reviewTextOverlaps(row.textContent, entry.text);
+  }
+  function elementLooksReviewStruckOut(element) {
+    if (!element || element.nodeType !== 1) return false;
+    const className = text(element.className).toLowerCase();
+    const style = text(element.getAttribute && element.getAttribute('style')).toLowerCase();
+    const tagName = text(element.tagName).toLowerCase();
+    return className.includes('strike') || className.includes('crossout') || tagName === 's' || tagName === 'del' || /text-decoration[^;]*(line-through)/i.test(style);
+  }
+  function nativeStrikeoutTextForRow(row) {
+    const stored = text(row && row.getAttribute && row.getAttribute('data-review-native-strikeout-text'));
+    if (stored) return stored;
+    const struck = [row].concat(qsa('*', row)).filter(elementLooksReviewStruckOut);
+    const texts = struck.map((element) => collapseReviewWhitespace(element.textContent)).filter(Boolean);
+    return texts[0] || '';
+  }
+  function markOptionRowStruckOut(row, entry) {
+    row.classList.add('f120-review-option--struck-out');
+    row.setAttribute('data-review-strikeout', 'true');
+    applyOptionStrikeoutTextStyling(row, entry);
+  }
+  function appendUnmatchedOptionStrikeouts(root, entries) {
+    const visibleEntries = (Array.isArray(entries) ? entries : []).map((entry) => ({ text: entry.optionText || entry.text || (entry.optionAnswerId ? 'Option ' + entry.optionAnswerId : entry.optionIndex ? 'Option ' + entry.optionIndex : '') })).filter((entry) => text(entry.text));
+    if (!visibleEntries.length) return;
+    const summary = el('div', { className: 'f120-review-option-strikeout-summary', attrs: { 'aria-label': 'Strikeouts recorded during attempt' } });
+    summary.appendChild(el('strong', { text: 'Strikeouts' }));
+    const list = el('ul');
+    visibleEntries.forEach((entry) => list.appendChild(el('li', { className: 'f120-review-option--struck-out', text: entry.text })));
+    summary.appendChild(list);
+    const options = qs('ol.options', root);
+    if (options && options.parentNode) {
+      options.parentNode.insertBefore(summary, options.nextSibling);
+      return;
+    }
+    const answerBox = qs('div[id$="_div"].NBOptionListComp.answerbox, .NBOptionListComp.answerbox, .answerbox', root);
+    (answerBox || root).appendChild(summary);
+  }
+  function applyOptionStrikeoutTextStyling(row, entry) {
+    const optionText = row.querySelector('.f120-review-option-text');
+    if (optionText) optionText.classList.add('f120-review-option-struck-text');
+    if (isTableOptionRow(row)) {
+      const cell = Array.from(row.querySelectorAll('td, th')).pop() || row;
+      let struckText = cell.querySelector('.f120-review-option-struck-text');
+      if (!struckText) {
+        struckText = el('span', { className: 'f120-review-option-struck-text' });
+        Array.from(cell.childNodes).filter((node) => !(node.nodeType === 1 && node.classList && node.classList.contains('f120-review-option-status'))).forEach((node) => struckText.appendChild(node));
+        cell.appendChild(struckText);
+      }
+    }
+    if (entry && entry.text) row.setAttribute('data-review-strikeout-text', entry.text);
+  }
+  function applyOptionStrikeouts(root, question) {
+    const rows = qsa('.f120-review-option-row', root);
+    const matchedRows = new Set();
+    rows.forEach((row) => {
+      const nativeText = nativeStrikeoutTextForRow(row);
+      if (!nativeText) return;
+      matchedRows.add(row);
+      markOptionRowStruckOut(row, { text: nativeText });
+    });
+    const unmatchedEntries = [];
+    const entries = strikeoutEntriesForQuestion(question);
+    entries.forEach((entry) => {
+      const match = rows.find((row, index) => !matchedRows.has(row) && rowMatchesStrikeoutEntry(row, question, entry, index));
+      if (!match) {
+        unmatchedEntries.push(entry);
+        return;
+      }
+      matchedRows.add(match);
+      markOptionRowStruckOut(match, entry);
+    });
+    appendUnmatchedOptionStrikeouts(root, unmatchedEntries);
+  }
   function removeChoiceLetterFromText(value, letter) {
     const compact = collapseReviewWhitespace(value);
     const normalizedLetter = text(letter).split('.').join('').toUpperCase();
@@ -1015,6 +1133,8 @@ function buildReviewRuntimeScript(model) {
     row.setAttribute('data-review-option-letter', letter);
     const input = row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]');
     row.setAttribute('data-review-input-value', text(input && input.getAttribute('value')));
+    const nativeStrikeoutText = nativeStrikeoutTextForRow(row);
+    if (nativeStrikeoutText) row.setAttribute('data-review-native-strikeout-text', nativeStrikeoutText);
     if (isTableOptionRow(row)) {
       if (input) input.remove();
       return;
@@ -1582,6 +1702,12 @@ function buildReviewRuntimeScript(model) {
   function renderFallbackQuestion(question) {
     const wrapper = el('div', { className: 'f120-review-item-unavailable' });
     wrapper.appendChild(el('p', { text: 'Stored rendered item snapshot unavailable. Compact review data shown below.' }));
+    const strikeouts = strikeoutEntriesForQuestion(question);
+    if (strikeouts.length) {
+      const strikeoutList = el('ul', { className: 'f120-review-fallback-strikeouts' });
+      strikeouts.forEach((entry) => strikeoutList.appendChild(el('li', { className: 'f120-review-option--struck-out', text: entry.text })));
+      wrapper.appendChild(strikeoutList);
+    }
     const list = el('dl', { className: 'f120-review-detail-list' });
     appendDetail(list, 'Selected', question.selectedAnswerId || '—');
     appendDetail(list, 'Correct', question.correctAnswerId || '—');
@@ -1620,6 +1746,7 @@ function buildReviewRuntimeScript(model) {
       qsa('source', node).forEach((source) => source.removeAttribute('src'));
     });
     decorateOptionRows(medley, question);
+    applyOptionStrikeouts(medley, question);
     applyQuestionHighlights(medley, question);
     insertTimeSpent(root && root.nodeType === 1 ? root : medley, question);
   }
@@ -1641,16 +1768,9 @@ function buildReviewRuntimeScript(model) {
     appendDetail(details, 'Correct', question.correctAnswerId || '—');
     appendDetail(details, 'Marked', question.marked ? 'yes' : 'no');
     appendDetail(details, 'Time', formatDuration(question.timingMs));
-    const annotations = question.annotations || {};
-    const strikeouts = Array.isArray(annotations.strikeouts) ? annotations.strikeouts : [];
-    appendDetail(details, 'Strikeouts', strikeouts.length ? String(strikeouts.length) : '—');
     appendDetail(details, 'Question id', question.questionId);
     if (question.notes) {
       compact.appendChild(el('div', { text: 'Notes: ' + question.notes }));
-    }
-    if (strikeouts.length) {
-      compact.appendChild(el('strong', { text: 'Strikeouts' }));
-      strikeouts.slice(0, 5).forEach((entry) => compact.appendChild(el('div', { text: text(entry.text || entry.html).slice(0, 180) })));
     }
     const timeline = Array.isArray(question.answerTimeline) ? question.answerTimeline : [];
     const answerChanges = timeline.map(formatAnswerChange).filter(Boolean);

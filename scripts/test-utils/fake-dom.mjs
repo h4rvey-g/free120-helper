@@ -234,10 +234,19 @@ function el(tagName, attrs = {}, children = []) {
 }
 
 function createFakeDocument(body, options = {}) {
-  return {
+  const defaultView = options.defaultView || null;
+  const attachOwnerDocument = (node, documentRef) => {
+    if (!node || typeof node !== 'object') {
+      return;
+    }
+    node.ownerDocument = documentRef;
+    (node.children || []).forEach((child) => attachOwnerDocument(child, documentRef));
+  };
+  const documentRef = {
     title: options.title || 'Synthetic WebFRED Step 1',
     body,
     documentElement: body,
+    defaultView,
     querySelector(selector) {
       return body.querySelector(selector);
     },
@@ -245,6 +254,8 @@ function createFakeDocument(body, options = {}) {
       return body.querySelectorAll(selector);
     },
   };
+  attachOwnerDocument(body, documentRef);
+  return documentRef;
 }
 
 function createFakeWindow(href = 'https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120') {

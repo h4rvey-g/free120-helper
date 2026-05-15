@@ -850,6 +850,20 @@ function elementLooksHighlighted(element) {
     || /background(?:-color)?\s*:\s*(?:yellow|#ff|rgb\(255|rgba\(255)/i.test(style);
 }
 
+function elementHasComputedTextDecorationLineThrough(element) {
+  const ownerWindow = element && element.ownerDocument && element.ownerDocument.defaultView;
+  if (!ownerWindow || typeof ownerWindow.getComputedStyle !== 'function') {
+    return false;
+  }
+  try {
+    const computedStyle = ownerWindow.getComputedStyle(element);
+    const decoration = normalizeString(computedStyle && (computedStyle.textDecorationLine || computedStyle.textDecoration), '').toLowerCase();
+    return decoration.includes('line-through');
+  } catch (_error) {
+    return false;
+  }
+}
+
 function elementLooksStruckOut(element) {
   const className = normalizeString(element.className, '').toLowerCase();
   const style = normalizeString(safeAttribute(element, 'style'), '').toLowerCase();
@@ -858,7 +872,8 @@ function elementLooksStruckOut(element) {
     || className.includes('crossout')
     || tagName === 's'
     || tagName === 'del'
-    || /text-decoration[^;]*(line-through)/i.test(style);
+    || /text-decoration[^;]*(line-through)/i.test(style)
+    || elementHasComputedTextDecorationLineThrough(element);
 }
 
 function isTrackingWhitespace(char) {
@@ -937,15 +952,61 @@ function getTrackingAnnotationOccurrence(root, element) {
   return countTextOccurrences(collectTextThroughElement(root, element), annotationText);
 }
 
+function getTrackingAnnotationOptionRows(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') {
+    return [];
+  }
+  const optionRows = Array.from(root.querySelectorAll('ol.options > li.stContext, li.stContext'));
+  if (optionRows.length) {
+    return optionRows;
+  }
+  return Array.from(root.querySelectorAll('input.NBOptionInput, input[type="radio"], input[type="checkbox"]')).map((input) => (
+    (typeof input.closest === 'function' && input.closest('li, tr, label, .stContext, .NBOptionListComp, .answerbox')) || input.parentElement || input
+  ));
+}
+
+function getTrackingAnnotationOptionContext(root, element) {
+  if (!root || !element || typeof element.closest !== 'function') {
+    return null;
+  }
+  const rows = getTrackingAnnotationOptionRows(root);
+  let row = element.closest('li.stContext, tr, label, .stContext');
+  if (!row || !rows.includes(row)) {
+    row = rows.find((candidate) => candidate === element || (candidate && typeof candidate.contains === 'function' && candidate.contains(element))) || null;
+  }
+  if (!row) {
+    return null;
+  }
+  const rowIndex = rows.indexOf(row);
+  const input = typeof row.querySelector === 'function' ? row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]') : null;
+  const inputValue = safeAttribute(input, 'value');
+  const inputName = safeAttribute(input, 'name');
+  const answerId = firstNonEmpty([
+    inputValue,
+    safeAttribute(input, 'id'),
+    inputName && inputValue ? `${inputName}:${inputValue}` : '',
+    safeAttribute(row, 'data-option-id'),
+    safeAttribute(row, 'data-answer-id'),
+    rowIndex >= 0 ? `option-${rowIndex + 1}` : '',
+  ]);
+  return Object.freeze({
+    optionIndex: rowIndex >= 0 ? rowIndex + 1 : 0,
+    optionAnswerId: answerId,
+    optionText: safeElementText(row),
+  });
+}
+
 function serializeTrackingAnnotationElements(elements, root) {
   return Array.from(elements)
     .map((element, index) => {
       const occurrence = getTrackingAnnotationOccurrence(root, element);
+      const optionContext = getTrackingAnnotationOptionContext(root, element);
       return Object.freeze({
         index: index + 1,
         occurrence,
         text: safeElementText(element),
         html: truncateTrackingHtml(element.outerHTML || element.innerHTML || ''),
+        ...(optionContext || {}),
       });
     })
     .filter((entry) => entry.text || entry.html)
@@ -1083,6 +1144,28 @@ function createTrackingWebfredShellSnapshot(candidate = {}) {
   });
 }
 
+function mergeTrackingAnnotations(existingAnnotations, capturedAnnotations) {
+  const existing = isPlainObject(existingAnnotations) ? existingAnnotations : {};
+  const captured = isPlainObject(capturedAnnotations) ? capturedAnnotations : {};
+  const existingHighlights = Array.isArray(existing.highlights) ? existing.highlights : [];
+  const existingStrikeouts = Array.isArray(existing.strikeouts) ? existing.strikeouts : [];
+  const capturedHighlights = Array.isArray(captured.highlights) ? captured.highlights : [];
+  const capturedStrikeouts = Array.isArray(captured.strikeouts) ? captured.strikeouts : [];
+  const highlights = capturedHighlights.length ? capturedHighlights : existingHighlights;
+  const strikeouts = capturedStrikeouts.length ? capturedStrikeouts : existingStrikeouts;
+  const status = highlights.length || strikeouts.length
+    ? 'captured'
+    : normalizeString(captured.status, normalizeString(existing.status, 'empty'));
+  return Object.freeze({
+    ...existing,
+    ...captured,
+    status,
+    highlights,
+    strikeouts,
+    capturedAt: captured.highlights || captured.strikeouts ? (captured.capturedAt || existing.capturedAt) : existing.capturedAt,
+  });
+}
+
 function createTrackingQuestionSnapshot(candidate) {
   const adapterState = candidate.adapterState || {};
   const item = candidate.item || getTrackingCurrentItem(adapterState, candidate.itemList) || {};
@@ -1106,7 +1189,8 @@ function createTrackingQuestionSnapshot(candidate) {
   const selectedAnswerId = domAnswerAuthoritative ? selectedFromDom : '';
   const correctAnswerId = getCorrectAnswerForQuestion(questionId, candidate.attempt, candidate.qbankCaptureResult);
   const notes = root ? extractTrackingNotesFromDom(root) : Object.freeze({ status: 'unavailable', text: '', fields: [] });
-  const annotations = root ? extractTrackingAnnotationsFromDom(root) : Object.freeze({ status: 'unavailable', highlights: [], strikeouts: [] });
+  const capturedAnnotations = root ? extractTrackingAnnotationsFromDom(root) : Object.freeze({ status: 'unavailable', highlights: [], strikeouts: [] });
+  const annotations = mergeTrackingAnnotations(candidate.existingAnnotations, capturedAnnotations);
   const contentSource = getSnapshotContentSource(qbankSnapshot, root, stateContent);
   const renderedHtml = firstNonEmpty([
     qbankSnapshot && qbankSnapshot.renderedHtml,
@@ -1536,6 +1620,9 @@ async function persistTrackingState(options) {
 
   const questionId = effectiveCurrentItem.questionId;
   if (root || effectiveAdapterState.currentContent) {
+    const existingSnapshot = typeof storage.getQuestionSnapshot === 'function'
+      ? await storage.getQuestionSnapshot(attempt.id, questionId)
+      : null;
     let snapshot = createTrackingQuestionSnapshot({
       attemptId: attempt.id,
       attempt: { ...attempt, ...patch },
@@ -1546,11 +1633,9 @@ async function persistTrackingState(options) {
       document: adapterDocument,
       timingByQuestionId,
       qbankCaptureResult,
+      existingAnnotations: (existingSnapshot && existingSnapshot.annotations) || (attempt.annotationsByQuestionId && attempt.annotationsByQuestionId[questionId]),
     });
     try {
-      const existingSnapshot = typeof storage.getQuestionSnapshot === 'function'
-        ? await storage.getQuestionSnapshot(attempt.id, snapshot.questionId)
-        : null;
       const existingResourceData = isPlainObject(existingSnapshot && existingSnapshot.resourceDataByUrl) ? existingSnapshot.resourceDataByUrl : {};
       const snapshotResourceData = isPlainObject(snapshot && snapshot.resourceDataByUrl) ? snapshot.resourceDataByUrl : {};
       const baseUrl = normalizeString(adapterWindow && adapterWindow.location && adapterWindow.location.href, `${SCRIPT.ORIGIN}/webfred/`);

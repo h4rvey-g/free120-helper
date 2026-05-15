@@ -103,11 +103,18 @@ assert.match(html, /function removeOptionNumericPrefixes/, 'review runtime remov
 assert.match(html, /f120-review-options-list/, 'review page styles suppress numeric answer choice list markers');
 assert.match(html, /f120-review-option-label/, 'review page styles keep answer letter and text on one line');
 assert.match(html, /function applyQuestionHighlights/, 'review runtime applies captured highlights back onto question content');
+assert.match(html, /function applyOptionStrikeouts/, 'review runtime applies captured strikeouts directly to matching answer options');
+assert.doesNotMatch(html, /f120-review-option-strikeout-badge/, 'review page no longer adds inline answer option strikeout badges');
+assert.match(html, /text-decoration-color: #111827/, 'review page renders strikeout lines in black');
+assert.match(html, /f120-review-option-strikeout-summary/, 'review page styles include an in-question fallback for unmatched strikeouts');
+assert.match(html, /f120-review-option--struck-out/, 'review page styles render struck-out answer options inline');
 assert.match(html, /function findCollapsedTextRanges/, 'review runtime can find every repeated occurrence of highlighted text');
 assert.match(html, /function wrapTextNodeHighlights/, 'review runtime can apply multiple inline highlights in one text node');
 assert.match(html, /f120-review-text-highlight/, 'review page styles include inline yellow highlight marks');
 assert.doesNotMatch(html, /appendDetail\(details, 'Highlights'/, 'question detail pane does not list highlights separately');
 assert.doesNotMatch(html, /compact\.appendChild\(el\('strong', \{ text: 'Highlights'/, 'compact side pane does not duplicate highlight text');
+assert.doesNotMatch(html, /appendDetail\(details, 'Strikeouts'/, 'question detail pane does not list strikeouts separately');
+assert.doesNotMatch(html, /compact\.appendChild\(el\('strong', \{ text: 'Strikeouts'/, 'compact side pane does not duplicate strikeout text');
 assert.match(html, /#medley \.NBExposition[\s\S]*max-width: 820px/, 'review page styles constrain question stem line length for readability');
 assert.match(html, /#medley \.NBExposition[\s\S]*line-height: 1\.58/, 'review page styles improve question stem line spacing');
 assert.match(html, /#medley \.NBExposition[\s\S]*font-size: 16px/, 'review page styles keep question stem font size aligned with options');

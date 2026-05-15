@@ -90,6 +90,15 @@ const REVIEW_PAGE_CSS = `
   .f120-review-option--correct { background: rgba(16,185,129,0.12) !important; outline: 2px solid rgba(16,185,129,0.35); outline-offset: 1px; }
   .f120-review-option--selected-wrong { background: rgba(239,68,68,0.12) !important; outline: 2px solid rgba(239,68,68,0.35); outline-offset: 1px; }
   .f120-review-option--selected-unknown { background: rgba(245,158,11,0.14) !important; outline: 2px solid rgba(245,158,11,0.35); outline-offset: 1px; }
+  #medley .f120-review-option--struck-out { color: #64748b; }
+  #medley .f120-review-option--struck-out .f120-review-option-text,
+  #medley .f120-review-option--struck-out .f120-review-option-struck-text,
+  #medley .f120-review-option-strikeout-summary .f120-review-option--struck-out,
+  #medley .f120-review-fallback-strikeouts .f120-review-option--struck-out { text-decoration: line-through; text-decoration-thickness: 2px; text-decoration-color: #111827; }
+  #medley .f120-review-option--struck-out .f120-review-option-status { text-decoration: none; }
+  #medley .f120-review-option-strikeout-summary { margin: 8px 0 12px; padding: 8px 10px; border-left: 3px solid #ef4444; background: #fef2f2; color: #64748b; }
+  #medley .f120-review-option-strikeout-summary strong { color: #991b1b; }
+  #medley .f120-review-option-strikeout-summary ul { margin: 4px 0 0; padding-left: 18px; }
   .f120-review-time-spent { margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: #f8fafc; color: #334155; font-weight: 700; }
   #medley img, #medley video, #medley audio { max-width: 100%; }
   #medley video, #medley audio { display: block; }

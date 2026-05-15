@@ -37,14 +37,13 @@ import { createFakeDocument, createFakeWindow, el } from './test-utils/fake-dom.
 
 const choiceRows = el('ol', { class: 'options' }, [
   el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'q1', value: 'A', checked: true }), el('span', {}, ['Synthetic A'])]),
-  el('li', { class: 'stContext correct' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'q1', value: 'B' }), el('span', {}, ['Synthetic B'])]),
+  el('li', { class: 'stContext correct' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'q1', value: 'B' }), el('span', { style: 'text-decoration: line-through' }, ['Synthetic B'])]),
 ]);
 const item = el('div', { id: 'item-q1', 'data-component-id': 'component-q1', 'data-item-index': '1' }, [
   el('div', { class: 'NBExposition' }, ['Synthetic stem']),
   el('div', { id: 'q1_div', class: 'NBOptionListComp answerbox', 'data-correct-answer': 'B' }, [choiceRows]),
   el('textarea', {}, ['Synthetic note']),
   el('mark', {}, ['Synthetic highlight']),
-  el('span', { style: 'text-decoration: line-through' }, ['Synthetic strikeout']),
   el('img', { src: 'https://example.test/synthetic.png' }),
   el('video', { 'data-src': 'api/Resource?name=synthetic.webm' }),
   el('div', { style: 'background-image: url(api/Resource?name=background.gif)' }, []),
@@ -56,10 +55,12 @@ const nav = el('nav', {}, [el('ol', { id: 'leftnav' }, [
   el('li', { class: 'keyitem' }, [el('span', { class: 'index' }, ['Key'])]),
 ])]);
 const body = el('main', {}, [nav, el('section', { id: 'item' }, [el('article', { id: 'content' }, [medley])]), el('div', {}, ['Block 1 of 1'])]);
-const fakeDocument = createFakeDocument(body, { title: 'Synthetic Step 1 Free 120' });
 const fakeWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=Step%201&exam=Free%20120&section=Block%201');
-const genericDriverDocument = createFakeDocument(body, { title: 'NBME Exam Driver' });
+const fakeDocument = createFakeDocument(body, { title: 'Synthetic Step 1 Free 120', defaultView: fakeWindow });
+fakeWindow.document = fakeDocument;
 const genericDriverWindow = createFakeWindow('https://orientation.nbme.org/webfred/#/main?program=USMLE&exam=NBME%20Exam%20Driver&section=Step%201%20Block%202&block=2&mode=test');
+const genericDriverDocument = createFakeDocument(body, { title: 'NBME Exam Driver', defaultView: genericDriverWindow });
+genericDriverWindow.document = genericDriverDocument;
 
 assert.equal(firstNonEmpty(['', 'A', 'B']), 'A');
 assert.equal(coercePositiveInteger('3', 1), 3);
@@ -826,6 +827,9 @@ assert.equal(trackingSnapshot.notes, 'Synthetic note');
 assert.equal(trackingSnapshot.annotations.highlights.length, 1);
 assert.equal(trackingSnapshot.annotations.highlights[0].occurrence, 1);
 assert.equal(trackingSnapshot.annotations.strikeouts.length, 1);
+assert.equal(trackingSnapshot.annotations.strikeouts[0].optionIndex, 2);
+assert.equal(trackingSnapshot.annotations.strikeouts[0].optionAnswerId, 'B');
+assert.equal(trackingSnapshot.annotations.strikeouts[0].optionText, 'Synthetic B');
 assert.equal(trackingSnapshot.timingMs, 1234);
 assert.deepEqual(trackingSnapshot.resourceUrls, ['https://example.test/synthetic.png', 'api/Resource?name=synthetic.webm', 'api/Resource?name=background.gif']);
 assert.equal(trackingSnapshot.resourceDataByUrl['api/Resource?name=synthetic.webm'], 'data:video/webm;base64,AAAA');
@@ -845,6 +849,62 @@ assert.match(liveFallbackTrackingSnapshot.renderedHtml, /Synthetic stem/, 'live 
 assert.equal(liveFallbackTrackingSnapshot.choices.length, 3, 'live snapshot choices keep review option rows without qbank cache');
 assert.equal(liveFallbackTrackingSnapshot.selectedAnswerId, 'A', 'live snapshot records selected answer without qbank cache');
 assert.equal(liveFallbackTrackingSnapshot.metadata.questionContentSource, 'adapter-current-content');
+
+const cssOnlyStrikeoutRows = el('ol', { class: 'options' }, [
+  el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'css-strikeout', value: 'A' }), el('span', {}, ['Visible A'])]),
+  el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'css-strikeout', value: 'B' }), el('span', { class: 'NBStrikeoutOnly' }, ['Visible B'])]),
+]);
+const cssOnlyStrikeoutItem = el('div', { id: 'item-css-strikeout', 'data-component-id': 'component-css-strikeout', 'data-item-index': '1' }, [
+  el('div', { class: 'NBExposition' }, ['CSS-only strikeout stem']),
+  el('div', { id: 'css_strikeout_div', class: 'NBOptionListComp answerbox' }, [cssOnlyStrikeoutRows]),
+]);
+const cssOnlyStrikeoutWindow = createFakeWindow();
+cssOnlyStrikeoutWindow.getComputedStyle = (element) => ({
+  display: 'block',
+  visibility: 'visible',
+  textDecorationLine: element && element.className === 'NBStrikeoutOnly' ? 'line-through' : 'none',
+  textDecoration: element && element.className === 'NBStrikeoutOnly' ? 'line-through' : 'none',
+});
+const cssOnlyStrikeoutDocument = createFakeDocument(cssOnlyStrikeoutItem, { defaultView: cssOnlyStrikeoutWindow });
+cssOnlyStrikeoutWindow.document = cssOnlyStrikeoutDocument;
+const cssOnlyStrikeoutState = createSyntheticAdapterState({
+  currentItem: Object.freeze({ questionId: 'q-css-strikeout', componentId: 'component-css-strikeout', medleyId: 'medley-1', blockNumber: 1, itemIndex: 1, selectedAnswerId: '', marked: false, current: true, identitySource: 'component-medley' }),
+  itemList: Object.freeze([Object.freeze({ questionId: 'q-css-strikeout', componentId: 'component-css-strikeout', medleyId: 'medley-1', blockNumber: 1, itemIndex: 1, selectedAnswerId: '', current: true, identitySource: 'component-medley' })]),
+  currentContent: Object.freeze({
+    renderedHtml: cssOnlyStrikeoutItem.outerHTML,
+    promptHtml: 'CSS-only strikeout stem',
+    choices: Object.freeze([{ id: 'A', label: 'Visible A', index: 1 }, { id: 'B', label: 'Visible B', index: 2 }]),
+    resourceUrls: Object.freeze([]),
+  }),
+});
+const cssOnlyStrikeoutSnapshot = createTrackingQuestionSnapshot({
+  attemptId: attempt.id,
+  attempt,
+  adapterState: cssOnlyStrikeoutState,
+  item: cssOnlyStrikeoutState.currentItem,
+  itemList: cssOnlyStrikeoutState.itemList,
+  timingByQuestionId: {},
+  qbankCaptureResult: null,
+  root: cssOnlyStrikeoutItem,
+  document: cssOnlyStrikeoutDocument,
+});
+assert.equal(cssOnlyStrikeoutSnapshot.annotations.strikeouts.length, 1, 'computed-style line-through strikeouts are captured');
+assert.equal(cssOnlyStrikeoutSnapshot.annotations.strikeouts[0].optionIndex, 2);
+assert.equal(cssOnlyStrikeoutSnapshot.annotations.strikeouts[0].optionAnswerId, 'B');
+
+const preservedStrikeoutSnapshot = createTrackingQuestionSnapshot({
+  attemptId: attempt.id,
+  attempt,
+  adapterState: cssOnlyStrikeoutState,
+  item: cssOnlyStrikeoutState.currentItem,
+  itemList: cssOnlyStrikeoutState.itemList,
+  timingByQuestionId: {},
+  qbankCaptureResult: null,
+  root: el('div', { id: 'item-css-strikeout-empty' }, [el('div', { class: 'NBExposition' }, ['CSS-only strikeout stem'])]),
+  document: cssOnlyStrikeoutDocument,
+  existingAnnotations: cssOnlyStrikeoutSnapshot.annotations,
+});
+assert.equal(preservedStrikeoutSnapshot.annotations.strikeouts.length, 1, 'later DOM captures without visible strikeout preserve existing strikeout annotations');
 
 const repeatedHighlightItem = el('div', { id: 'item-repeated', 'data-component-id': 'component-repeated', 'data-item-index': '1' }, [
   el('div', { class: 'NBExposition' }, ['Blood before ', el('mark', {}, ['blood']), ' after blood.']),
