@@ -102,6 +102,12 @@ assert.match(html, /replaceChildren\(row, \[label\]\)/, 'review runtime removes 
 assert.match(html, /function removeOptionNumericPrefixes/, 'review runtime removes ordered-list numeric prefixes from answer choices');
 assert.match(html, /f120-review-options-list/, 'review page styles suppress numeric answer choice list markers');
 assert.match(html, /f120-review-option-label/, 'review page styles keep answer letter and text on one line');
+assert.match(html, /function applyQuestionHighlights/, 'review runtime applies captured highlights back onto question content');
+assert.match(html, /function findCollapsedTextRanges/, 'review runtime can find every repeated occurrence of highlighted text');
+assert.match(html, /function wrapTextNodeHighlights/, 'review runtime can apply multiple inline highlights in one text node');
+assert.match(html, /f120-review-text-highlight/, 'review page styles include inline yellow highlight marks');
+assert.doesNotMatch(html, /appendDetail\(details, 'Highlights'/, 'question detail pane does not list highlights separately');
+assert.doesNotMatch(html, /compact\.appendChild\(el\('strong', \{ text: 'Highlights'/, 'compact side pane does not duplicate highlight text');
 assert.match(html, /#medley \.NBExposition[\s\S]*max-width: 820px/, 'review page styles constrain question stem line length for readability');
 assert.match(html, /#medley \.NBExposition[\s\S]*line-height: 1\.58/, 'review page styles improve question stem line spacing');
 assert.match(html, /#medley \.NBExposition[\s\S]*font-size: 16px/, 'review page styles keep question stem font size aligned with options');

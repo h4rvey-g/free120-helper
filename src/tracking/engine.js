@@ -861,13 +861,93 @@ function elementLooksStruckOut(element) {
     || /text-decoration[^;]*(line-through)/i.test(style);
 }
 
-function serializeTrackingAnnotationElements(elements) {
+function isTrackingWhitespace(char) {
+  const code = char ? char.charCodeAt(0) : 0;
+  return code === 9 || code === 10 || code === 11 || code === 12 || code === 13 || code === 32 || code === 160;
+}
+
+function collapseTrackingWhitespace(value) {
+  const raw = normalizeString(value, '');
+  let output = '';
+  let previousWasSpace = true;
+  for (const char of raw) {
+    if (isTrackingWhitespace(char)) {
+      if (!previousWasSpace) {
+        output += ' ';
+        previousWasSpace = true;
+      }
+    } else {
+      output += char;
+      previousWasSpace = false;
+    }
+  }
+  return output.trim();
+}
+
+function childNodesForTracking(node) {
+  return Array.from((node && (node.childNodes || node.children)) || []);
+}
+
+function collectTextThroughElement(root, targetElement) {
+  const segments = [];
+  let found = false;
+  const visit = (node) => {
+    if (!node || found) {
+      return;
+    }
+    if (node === targetElement) {
+      segments.push(safeElementText(targetElement));
+      found = true;
+      return;
+    }
+    if (node.nodeType === 3) {
+      segments.push(normalizeString(node.nodeValue || node.textContent, ''));
+      return;
+    }
+    childNodesForTracking(node).forEach(visit);
+  };
+  visit(root);
+  return found ? segments.join(' ') : '';
+}
+
+function countTextOccurrences(source, phrase) {
+  const needle = collapseTrackingWhitespace(phrase).toLowerCase();
+  if (!needle) {
+    return 0;
+  }
+  const haystack = collapseTrackingWhitespace(source).toLowerCase();
+  let count = 0;
+  let searchIndex = 0;
+  while (searchIndex <= haystack.length - needle.length) {
+    const index = haystack.indexOf(needle, searchIndex);
+    if (index < 0) {
+      break;
+    }
+    count += 1;
+    searchIndex = index + needle.length;
+  }
+  return count;
+}
+
+function getTrackingAnnotationOccurrence(root, element) {
+  const annotationText = collapseTrackingWhitespace(safeElementText(element));
+  if (!root || !element || !annotationText) {
+    return 0;
+  }
+  return countTextOccurrences(collectTextThroughElement(root, element), annotationText);
+}
+
+function serializeTrackingAnnotationElements(elements, root) {
   return Array.from(elements)
-    .map((element, index) => Object.freeze({
-      index: index + 1,
-      text: safeElementText(element),
-      html: truncateTrackingHtml(element.outerHTML || element.innerHTML || ''),
-    }))
+    .map((element, index) => {
+      const occurrence = getTrackingAnnotationOccurrence(root, element);
+      return Object.freeze({
+        index: index + 1,
+        occurrence,
+        text: safeElementText(element),
+        html: truncateTrackingHtml(element.outerHTML || element.innerHTML || ''),
+      });
+    })
     .filter((entry) => entry.text || entry.html)
     .slice(0, TRACKING_ENGINE_CONFIG.MAX_ANNOTATION_ITEMS);
 }
@@ -877,8 +957,8 @@ function extractTrackingAnnotationsFromDom(root) {
     return Object.freeze({ status: 'unavailable', highlights: [], strikeouts: [] });
   }
   const allElements = Array.from(root.querySelectorAll('*'));
-  const highlights = serializeTrackingAnnotationElements(allElements.filter(elementLooksHighlighted));
-  const strikeouts = serializeTrackingAnnotationElements(allElements.filter(elementLooksStruckOut));
+  const highlights = serializeTrackingAnnotationElements(allElements.filter(elementLooksHighlighted), root);
+  const strikeouts = serializeTrackingAnnotationElements(allElements.filter(elementLooksStruckOut), root);
   return Object.freeze({
     status: highlights.length || strikeouts.length ? 'captured' : 'empty',
     highlights,

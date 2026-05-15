@@ -86,6 +86,7 @@ const REVIEW_PAGE_CSS = `
   #medley .f120-review-option-letter { flex: 0 0 auto; font-weight: 700; }
   #medley .f120-review-option-text { min-width: 0; overflow-wrap: anywhere; }
   .f120-review-option-status { vertical-align: middle; }
+  #medley mark, #medley .f120-review-text-highlight { background: #fef08a; color: inherit; border-radius: 3px; padding: 0 2px; }
   .f120-review-option--correct { background: rgba(16,185,129,0.12) !important; outline: 2px solid rgba(16,185,129,0.35); outline-offset: 1px; }
   .f120-review-option--selected-wrong { background: rgba(239,68,68,0.12) !important; outline: 2px solid rgba(239,68,68,0.35); outline-offset: 1px; }
   .f120-review-option--selected-unknown { background: rgba(245,158,11,0.14) !important; outline: 2px solid rgba(245,158,11,0.35); outline-offset: 1px; }

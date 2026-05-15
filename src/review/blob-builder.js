@@ -820,6 +820,152 @@ function buildReviewRuntimeScript(model) {
     }
     return output.trim();
   }
+  function annotationEntryText(entry) {
+    const direct = text(entry && entry.text);
+    if (direct) return direct;
+    const html = text(entry && entry.html);
+    if (!html) return '';
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    return text(template.content && template.content.textContent);
+  }
+  function annotationEntryOccurrence(entry) {
+    const value = Number(entry && (entry.occurrence || entry.occurrenceIndex));
+    return Number.isInteger(value) && value > 0 ? value : 0;
+  }
+  function highlightEntriesForQuestion(question) {
+    const annotations = question && question.annotations && typeof question.annotations === 'object' ? question.annotations : {};
+    const highlights = Array.isArray(annotations.highlights) ? annotations.highlights : [];
+    const seen = new Set();
+    return highlights.map((entry) => ({ text: collapseReviewWhitespace(annotationEntryText(entry)), occurrence: annotationEntryOccurrence(entry) })).filter((entry) => {
+      const key = entry.occurrence ? entry.text.toLowerCase() + '::' + entry.occurrence : entry.text.toLowerCase();
+      if (entry.text.length < 2 || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).sort((left, right) => {
+      const leftKey = left.text.toLowerCase();
+      const rightKey = right.text.toLowerCase();
+      if (leftKey === rightKey) return right.occurrence - left.occurrence;
+      return right.text.length - left.text.length;
+    });
+  }
+  function isAnnotatableTextNode(node) {
+    if (!node || !text(node.nodeValue || node.textContent)) return false;
+    const parent = node.parentElement;
+    return Boolean(parent && !parent.closest('mark, .f120-review-text-highlight, script, style, noscript, .f120-review-option-status'));
+  }
+  function annotatableTextNodes(root) {
+    const nodes = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let current = walker.nextNode();
+    while (current) {
+      if (isAnnotatableTextNode(current)) nodes.push(current);
+      current = walker.nextNode();
+    }
+    return nodes;
+  }
+  function normalizeHighlightRanges(ranges, sourceLength) {
+    const normalized = [];
+    (Array.isArray(ranges) ? ranges : []).map((range) => ({
+      start: Number(range && range.start),
+      end: Number(range && range.end),
+    })).filter((range) => Number.isInteger(range.start) && Number.isInteger(range.end) && range.start >= 0 && range.end > range.start && range.end <= sourceLength)
+      .sort((left, right) => left.start - right.start || left.end - right.end)
+      .forEach((range) => {
+        const previous = normalized[normalized.length - 1];
+        if (!previous || range.start >= previous.end) normalized.push(range);
+      });
+    return normalized;
+  }
+  function wrapTextNodeHighlights(node, ranges) {
+    if (!node || !node.parentNode) return 0;
+    const source = node.nodeValue || node.textContent || '';
+    const normalizedRanges = normalizeHighlightRanges(ranges, source.length);
+    if (!normalizedRanges.length) return 0;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    normalizedRanges.forEach((range) => {
+      if (range.start > cursor) fragment.appendChild(document.createTextNode(source.slice(cursor, range.start)));
+      const mark = el('mark', { className: 'f120-review-text-highlight', attrs: { 'data-free120-review-highlight': 'true' } });
+      mark.appendChild(document.createTextNode(source.slice(range.start, range.end)));
+      fragment.appendChild(mark);
+      cursor = range.end;
+    });
+    if (cursor < source.length) fragment.appendChild(document.createTextNode(source.slice(cursor)));
+    node.parentNode.replaceChild(fragment, node);
+    return normalizedRanges.length;
+  }
+  function getCollapsedTextMap(value) {
+    const source = String(value || '');
+    let normalized = '';
+    const starts = [];
+    const ends = [];
+    let previousWasSpace = true;
+    for (let index = 0; index < source.length; index += 1) {
+      const char = source.charAt(index);
+      if (isReviewWhitespace(char)) {
+        if (!previousWasSpace) {
+          normalized += ' ';
+          starts.push(index);
+          ends.push(index + 1);
+          previousWasSpace = true;
+        }
+      } else {
+        normalized += char;
+        starts.push(index);
+        ends.push(index + 1);
+        previousWasSpace = false;
+      }
+    }
+    if (normalized.endsWith(' ')) {
+      normalized = normalized.slice(0, -1);
+      starts.pop();
+      ends.pop();
+    }
+    return { normalized, starts, ends };
+  }
+  function findCollapsedTextRanges(source, phrase) {
+    const needle = collapseReviewWhitespace(phrase).toLowerCase();
+    if (needle.length < 2) return [];
+    const map = getCollapsedTextMap(source);
+    const haystack = map.normalized.toLowerCase();
+    const ranges = [];
+    let searchIndex = 0;
+    while (searchIndex <= haystack.length - needle.length) {
+      const index = haystack.indexOf(needle, searchIndex);
+      if (index < 0) break;
+      const start = map.starts[index];
+      const end = map.ends[index + needle.length - 1];
+      if (Number.isInteger(start) && Number.isInteger(end) && end > start) ranges.push({ start, end });
+      searchIndex = index + needle.length;
+    }
+    return ranges;
+  }
+  function highlightTextInQuestion(root, phrase, options = {}) {
+    if (!root || text(phrase).length < 2) return false;
+    const occurrence = Number(options && options.occurrence);
+    const targetOccurrence = Number.isInteger(occurrence) && occurrence > 0 ? occurrence : 0;
+    let seenOccurrences = 0;
+    let highlightCount = 0;
+    const matches = [];
+    annotatableTextNodes(root).forEach((node) => {
+      const source = node.nodeValue || node.textContent || '';
+      const ranges = findCollapsedTextRanges(source, phrase).filter(() => {
+        seenOccurrences += 1;
+        return !targetOccurrence || seenOccurrences === targetOccurrence;
+      });
+      if (ranges.length) matches.push({ node, ranges });
+    });
+    matches.forEach((match) => {
+      highlightCount += wrapTextNodeHighlights(match.node, match.ranges);
+    });
+    return highlightCount > 0;
+  }
+  function applyQuestionHighlights(root, question) {
+    highlightEntriesForQuestion(question).forEach((entry) => {
+      highlightTextInQuestion(root, entry.text, { occurrence: entry.occurrence });
+    });
+  }
   function removeChoiceLetterFromText(value, letter) {
     const compact = collapseReviewWhitespace(value);
     const normalizedLetter = text(letter).split('.').join('').toUpperCase();
@@ -1474,6 +1620,7 @@ function buildReviewRuntimeScript(model) {
       qsa('source', node).forEach((source) => source.removeAttribute('src'));
     });
     decorateOptionRows(medley, question);
+    applyQuestionHighlights(medley, question);
     insertTimeSpent(root && root.nodeType === 1 ? root : medley, question);
   }
   function appendDetail(container, label, value) {
@@ -1495,17 +1642,11 @@ function buildReviewRuntimeScript(model) {
     appendDetail(details, 'Marked', question.marked ? 'yes' : 'no');
     appendDetail(details, 'Time', formatDuration(question.timingMs));
     const annotations = question.annotations || {};
-    const highlights = Array.isArray(annotations.highlights) ? annotations.highlights : [];
     const strikeouts = Array.isArray(annotations.strikeouts) ? annotations.strikeouts : [];
-    appendDetail(details, 'Highlights', highlights.length ? String(highlights.length) : '—');
     appendDetail(details, 'Strikeouts', strikeouts.length ? String(strikeouts.length) : '—');
     appendDetail(details, 'Question id', question.questionId);
     if (question.notes) {
       compact.appendChild(el('div', { text: 'Notes: ' + question.notes }));
-    }
-    if (highlights.length) {
-      compact.appendChild(el('strong', { text: 'Highlights' }));
-      highlights.slice(0, 5).forEach((entry) => compact.appendChild(el('div', { text: text(entry.text || entry.html).slice(0, 180) })));
     }
     if (strikeouts.length) {
       compact.appendChild(el('strong', { text: 'Strikeouts' }));

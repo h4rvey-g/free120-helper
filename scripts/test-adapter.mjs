@@ -824,6 +824,7 @@ assert.equal(trackingSnapshot.selectedAnswerId, 'A');
 assert.equal(trackingSnapshot.correctAnswerId, 'A');
 assert.equal(trackingSnapshot.notes, 'Synthetic note');
 assert.equal(trackingSnapshot.annotations.highlights.length, 1);
+assert.equal(trackingSnapshot.annotations.highlights[0].occurrence, 1);
 assert.equal(trackingSnapshot.annotations.strikeouts.length, 1);
 assert.equal(trackingSnapshot.timingMs, 1234);
 assert.deepEqual(trackingSnapshot.resourceUrls, ['https://example.test/synthetic.png', 'api/Resource?name=synthetic.webm', 'api/Resource?name=background.gif']);
@@ -844,6 +845,39 @@ assert.match(liveFallbackTrackingSnapshot.renderedHtml, /Synthetic stem/, 'live 
 assert.equal(liveFallbackTrackingSnapshot.choices.length, 3, 'live snapshot choices keep review option rows without qbank cache');
 assert.equal(liveFallbackTrackingSnapshot.selectedAnswerId, 'A', 'live snapshot records selected answer without qbank cache');
 assert.equal(liveFallbackTrackingSnapshot.metadata.questionContentSource, 'adapter-current-content');
+
+const repeatedHighlightItem = el('div', { id: 'item-repeated', 'data-component-id': 'component-repeated', 'data-item-index': '1' }, [
+  el('div', { class: 'NBExposition' }, ['Blood before ', el('mark', {}, ['blood']), ' after blood.']),
+  el('div', { id: 'repeated_div', class: 'NBOptionListComp answerbox', 'data-correct-answer': 'A' }, [
+    el('ol', { class: 'options' }, [
+      el('li', { class: 'stContext' }, [el('input', { class: 'NBOptionInput', type: 'radio', name: 'repeated', value: 'A', checked: true }), el('span', {}, ['Answer A'])]),
+    ]),
+  ]),
+]);
+const repeatedHighlightState = createSyntheticAdapterState({
+  currentItem: Object.freeze({ questionId: 'q-repeated', componentId: 'component-repeated', medleyId: 'medley-1', blockNumber: 1, itemIndex: 1, selectedAnswerId: 'A', marked: false, current: true, identitySource: 'component-medley' }),
+  itemList: Object.freeze([Object.freeze({ questionId: 'q-repeated', componentId: 'component-repeated', medleyId: 'medley-1', blockNumber: 1, itemIndex: 1, selectedAnswerId: 'A', current: true, identitySource: 'component-medley' })]),
+  currentContent: Object.freeze({
+    renderedHtml: '<div id="item-repeated"><div class="NBExposition">Blood before blood after blood.</div></div>',
+    promptHtml: 'Blood before blood after blood.',
+    choices: Object.freeze([{ id: 'A', label: 'Answer A', index: 1, selected: true }]),
+    resourceUrls: Object.freeze([]),
+  }),
+});
+const repeatedHighlightSnapshot = createTrackingQuestionSnapshot({
+  attemptId: attempt.id,
+  attempt,
+  adapterState: repeatedHighlightState,
+  item: repeatedHighlightState.currentItem,
+  itemList: repeatedHighlightState.itemList,
+  timingByQuestionId: {},
+  qbankCaptureResult: null,
+  root: repeatedHighlightItem,
+  document: fakeDocument,
+});
+assert.equal(repeatedHighlightSnapshot.annotations.highlights.length, 1);
+assert.equal(repeatedHighlightSnapshot.annotations.highlights[0].text, 'blood');
+assert.equal(repeatedHighlightSnapshot.annotations.highlights[0].occurrence, 2, 'highlight capture records which repeated text occurrence was highlighted');
 
 const staleQ5Id = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', examSection: 'Block 1', medleyId: 'medley-1', componentId: 'component-q5', blockNumber: 1, itemIndex: 5 }).questionId;
 const staleQ6Id = buildQuestionIdentity({ examProgram: 'Step 1', examName: 'Free 120', examSection: 'Block 1', medleyId: 'medley-1', componentId: 'component-q6', blockNumber: 1, itemIndex: 6 }).questionId;

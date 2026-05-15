@@ -767,7 +767,7 @@ function createActiveExamPill(options = {}) {
     try {
       return settingsStore.get();
     } catch (_error) {
-      return { pillVisible: true, debug: false };
+      return { pillVisible: false, debug: false };
     }
   }
 
@@ -861,7 +861,7 @@ function createActiveExamPill(options = {}) {
   }
 
   function applyVisibility(settings) {
-    const visible = settings.pillVisible !== false;
+    const visible = settings.pillVisible === true;
     dom.visibleInput.checked = visible;
     dom.debugInput.checked = settings.debug === true;
     dom.root.classList.toggle('f120-active-exam-pill--hidden', !visible && !panelOpen);

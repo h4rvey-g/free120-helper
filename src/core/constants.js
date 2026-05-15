@@ -69,7 +69,7 @@ const FULL_BACKUP_WARNING = 'Full backup export includes locally stored question
 
 const DEFAULT_SETTINGS = Object.freeze({
   debug: false,
-  pillVisible: true,
+  pillVisible: false,
 });
 
 const PAGE_KIND = Object.freeze({
