@@ -1,4 +1,4 @@
-# USMLE Free 120 QBank Helper
+# USMLE Free 120 Helper
 
 A local-only userscript that enhances the official USMLE Free 120 practice exam experience on [orientation.nbme.org](https://orientation.nbme.org). It adds a review mode after the exam ends, allowing you to review your choices, just like any other modern Qbanks.
 
