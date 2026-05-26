@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         USMLE Free 120 QBank Helper
 // @namespace    https://github.com/hvg/free120-helper
-// @version      0.1.0
-// @description  Local-only scaffold for a USMLE Free 120 review/history helper.
-// @author       free120-helper contributors
+// @version      1.0.0
+// @description  USMLE Free 120 review/history helper.
+// @author       Harvey Guo
 // @match        https://orientation.nbme.org/
 // @match        https://orientation.nbme.org/Launch*
 // @match        https://orientation.nbme.org/Launch/*

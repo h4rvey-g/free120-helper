@@ -1,6 +1,6 @@
 const SCRIPT = Object.freeze({
   NAME: 'USMLE Free 120 QBank Helper',
-  VERSION: '0.1.0',
+  VERSION: '1.0.0',
   STORAGE_SCHEMA_VERSION: 1,
   STORAGE_NAMESPACE: 'free120-helper',
   ORIGIN: 'https://orientation.nbme.org',
