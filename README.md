@@ -92,6 +92,10 @@ src/
 └── runtime/                # Bootstrap and runtime state management
 ```
 
+## Support
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/O0G4208MNQ)
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE) — free for non-commercial use.
