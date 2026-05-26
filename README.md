@@ -13,7 +13,7 @@ A local-only userscript that enhances the official USMLE Free 120 practice exam 
 ## Installation
 
 1. Install a userscript manager in your browser, e.g. [Violentmonkey](https://violentmonkey.github.io/)
-2. Install the built userscript from `dist/free120-helper.user.js`, or build it yourself (see below).
+2. Install the script from either [Greasy Fork](https://greasyfork.org/zh-CN/scripts/579853-usmle-free-120-qbank-helper) or [GitHub Releases](https://github.com/h4rvey-g/free120-helper/releases/latest/download/free120-helper.user.js)
 
 ## Usage
 
