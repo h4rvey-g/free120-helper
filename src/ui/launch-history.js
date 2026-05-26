@@ -819,6 +819,8 @@ function injectLaunchHistoryStyles(adapterDocument) {
       box-shadow: none;
       font-size: 16px;
       padding-inline: 8px;
+      justify-content: center;
+      line-height: 1;
     }
     .f120-launch-history__select {
       border: 1px solid rgba(17, 24, 39, 0.18);
