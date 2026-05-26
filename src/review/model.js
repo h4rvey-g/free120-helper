@@ -1125,8 +1125,4 @@ function buildReviewModel(attempt, snapshots = []) {
   });
 }
 
-export {
-  buildReviewModel,
-  getReviewScoreSummary,
-  inferFallbackStatus,
-};
+export { buildReviewModel };

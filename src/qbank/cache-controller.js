@@ -481,12 +481,9 @@ function createQBankCacheController(options = {}) {
 
 export {
   QBANK_CACHE_ATTEMPT_PREFIX,
-  QBANK_CAPTURE_STATUS,
   QBANK_CAPTURE_STEP_OPTIONS,
-  QBANK_CAPTURE_STEP_KEYS,
   createQBankCacheAttemptId,
   isQuestionBlockDefinition,
-  normalizeQBankStepKey,
   getQBankStepKey,
   formatQBankStepLabel,
   normalizeQBankStepSelection,

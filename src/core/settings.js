@@ -65,4 +65,4 @@ function normalizeSettings(candidate) {
   return normalized;
 }
 
-export { createSettingsStore, readSettings, writeSettings, normalizeSettings };
+export { createSettingsStore };

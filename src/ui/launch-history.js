@@ -2194,8 +2194,6 @@ function createLaunchHistory(options = {}) {
 }
 
 export {
-  LAUNCH_HISTORY_STYLE_ID,
-  LAUNCH_HISTORY_ROOT_ID,
   IMPORT_REPLACE_WARNING,
   formatHistoryAttemptRow,
   canOpenReviewFromHistory,

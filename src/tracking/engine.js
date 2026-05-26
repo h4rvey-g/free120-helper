@@ -1975,8 +1975,6 @@ function createTrackingEngine(options = {}) {
 
 export {
   createTrackingEngine,
-  createTrackingEngineError,
-  createTrackingTimingState,
   createTrackingQuestionSnapshot,
   getTrackingItemList,
   buildTrackingAttemptPatch,

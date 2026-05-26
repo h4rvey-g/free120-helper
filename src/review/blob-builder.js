@@ -2058,10 +2058,7 @@ async function openReviewTab(options = {}) {
 }
 
 export {
-  REVIEW_PAGE_VERSION,
   buildReviewHtml,
-  createReviewBlob,
-  createReviewBlobUrl,
   isQBankCacheAttempt,
   loadQBankFallbackSnapshots,
   openReviewTab,

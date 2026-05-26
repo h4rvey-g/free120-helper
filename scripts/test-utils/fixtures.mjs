@@ -126,26 +126,10 @@ function createSyntheticAdapterState(overrides = {}) {
   });
 }
 
-function createSyntheticAnswerKeyRecords() {
-  return Object.freeze([
-    Object.freeze({ questionId: 'q1', componentId: 'component-q1', medleyId: 'medley-1', blockNumber: 1, itemIndex: 1, correctAnswerId: 'A', choices: syntheticChoices, confidence: 'high', captureSource: 'angular-bulk' }),
-    Object.freeze({ questionId: 'q2', componentId: 'component-q2', medleyId: 'medley-1', blockNumber: 1, itemIndex: 2, correctAnswerId: 'C', choices: syntheticChoices, confidence: 'high', captureSource: 'angular-bulk' }),
-  ]);
-}
-
-function createIncompleteAnswerKeyState() {
-  return createSyntheticAdapterState({
-    itemCount: 3,
-    itemList: createSyntheticAdapterState().itemList,
-  });
-}
-
 export {
   syntheticChoices,
   syntheticQuestionHtml,
   createSyntheticAttempt,
   createSyntheticSnapshots,
   createSyntheticAdapterState,
-  createSyntheticAnswerKeyRecords,
-  createIncompleteAnswerKeyState,
 };

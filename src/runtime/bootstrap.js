@@ -30,10 +30,10 @@ function bootstrapLaunchPage(services) {
 function bootstrapWebfredPage(services) {
   services.logger.debug('WebFRED page shell ready.', services.runtimeState.snapshot());
   bootstrapStorage(services);
-  bootstrapWebfredAdapter(services);
+  startWebfredAdapter(services);
 }
 
-function bootstrapWebfredAdapter(services) {
+function startWebfredAdapter(services) {
   if (!services.webfredAdapter) {
     return;
   }
@@ -109,9 +109,6 @@ export {
   createRuntimeState,
   bootstrapLaunchPage,
   bootstrapWebfredPage,
-  bootstrapWebfredAdapter,
-  summarizeWebfredStateForLog,
   bootstrapUnsupportedPage,
-  bootstrapStorage,
   publishApi,
 };

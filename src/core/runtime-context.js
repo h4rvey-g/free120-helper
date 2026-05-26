@@ -51,4 +51,4 @@ function freezeRuntimeContext(context) {
   });
 }
 
-export { detectRuntimeContext, freezeRuntimeContext };
+export { detectRuntimeContext };

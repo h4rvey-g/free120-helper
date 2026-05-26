@@ -177,7 +177,6 @@ function normalizeStringArray(value) {
 }
 
 export {
-  createDataValidationError,
   isPlainObject,
   isNonEmptyString,
   isObject,

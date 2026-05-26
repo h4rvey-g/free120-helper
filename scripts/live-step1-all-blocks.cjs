@@ -407,7 +407,8 @@ async page => {
       const inputs = rows.map((row) => row.querySelector('input.NBOptionInput, input[type="radio"], input[type="checkbox"]')).filter(Boolean);
       const optionValues = inputs.map((input) => input.getAttribute('value') || '');
       const optionTexts = rows.map((row) => (row.textContent || '').replace(/\s+/g, ' ').trim());
-      const selected = (inputs.find((input) => input.checked) || {}).value || '';
+      const selectedRow = document.querySelector('#medley ol.options [aria-selected="true"], #medley .f120-review-option-row[aria-selected="true"]');
+      const selected = (inputs.find((input) => input.checked) || {}).value || (selectedRow ? (selectedRow.getAttribute('data-review-input-value') || selectedRow.getAttribute('data-review-option-letter') || '') : '');
       const expected = expectedAnswers[key] || '';
       summaries.push({
         navIndex: Number(nav.querySelector('.index')?.textContent || 0),

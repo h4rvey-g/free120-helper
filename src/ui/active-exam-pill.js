@@ -1099,16 +1099,10 @@ function createActiveExamPill(options = {}) {
 }
 
 export {
-  ACTIVE_EXAM_PILL_STYLE_ID,
-  END_EXAM_REVIEW_CTA_ID,
-  REVIEW_READY_EVENT,
-  END_EXAM_REVIEW_LOCKED_MESSAGE,
   deriveActiveExamProgress,
   formatActiveExamProgress,
   isEndExamRoute,
-  isTerminalAdapterState,
   deriveEndExamReviewState,
-  buildEndExamCompletionAdapterState,
   buildEndExamCompletionPatch,
   refreshAttemptQBankKeysForEndExam,
   createActiveExamPill,

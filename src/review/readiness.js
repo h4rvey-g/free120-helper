@@ -100,12 +100,10 @@ function shouldPreferStoredEndExamAttempt(currentAttempt, storedAttempt) {
 }
 
 export {
-  getAttemptReviewEvidenceCount,
   hasAttemptReviewEvidence,
   isAttemptReviewReady,
   canOpenAttemptReview,
   isQBankCacheAttempt,
-  getAttemptSortTime,
   pickLatestEndExamAttempt,
   shouldPreferStoredEndExamAttempt,
 };

@@ -240,7 +240,8 @@ async page => {
       await waitFrame();
       const label = document.querySelector('#f120-review-current-label')?.textContent || '';
       const itemIndex = Number((label.match(/Item\s+(\d+)/) || [])[1] || nav.querySelector('.index')?.textContent || 0);
-      const selected = document.querySelector('#medley ol.options input:checked')?.getAttribute('value') || '';
+      const selectedRow = document.querySelector('#medley ol.options [aria-selected="true"], #medley .f120-review-option-row[aria-selected="true"]');
+      const selected = document.querySelector('#medley ol.options input:checked')?.getAttribute('value') || (selectedRow ? (selectedRow.getAttribute('data-review-input-value') || selectedRow.getAttribute('data-review-option-letter') || '') : '');
       summaries.push({
         navIndex: Number(nav.querySelector('.index')?.textContent || 0),
         questionId: nav.getAttribute('data-question-id') || '',

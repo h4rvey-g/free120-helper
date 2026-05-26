@@ -477,7 +477,8 @@ async page => {
       const rows = Array.from(document.querySelectorAll('#medley ol.options > li.stContext, #medley .NBOptionListComp.answerbox li.stContext, #medley li.stContext'));
       const inputs = Array.from(document.querySelectorAll('#medley input.NBOptionInput, #medley input[type="radio"], #medley input[type="checkbox"]'));
       const optionValues = inputs.map((input) => input.getAttribute('value') || '').filter(Boolean);
-      const selected = (inputs.find((input) => input.checked) || {}).value || '';
+      const selectedRow = document.querySelector('#medley ol.options [aria-selected="true"], #medley .f120-review-option-row[aria-selected="true"]');
+      const selected = (inputs.find((input) => input.checked) || {}).value || (selectedRow ? (selectedRow.getAttribute('data-review-input-value') || selectedRow.getAttribute('data-review-option-letter') || '') : '');
       const expected = selectedByPosition[key] || '';
       summaries.push({
         navIndex: Number(nav.querySelector('.index')?.textContent || 0),
@@ -517,7 +518,7 @@ async page => {
       duplicateKeys,
       missingKeys: expectedKeys.filter((key) => !seen.has(key)),
       selectionMismatches: summaries.filter((summary) => summary.selected !== summary.expected).map((summary) => ({ key: summary.key, expected: summary.expected, selected: summary.selected })).slice(0, 20),
-      contentFailures: summaries.filter((summary) => !(summary.inputCount >= 2 && summary.correctCount === 1 && !summary.unavailable && summary.optionValues.includes(summary.expected))).map((summary) => ({
+      contentFailures: summaries.filter((summary) => !(summary.optionCount >= 2 && summary.correctCount === 1 && !summary.unavailable && (summary.optionValues.includes(summary.expected) || summary.selected === summary.expected))).map((summary) => ({
         key: summary.key,
         optionCount: summary.optionCount,
         inputCount: summary.inputCount,

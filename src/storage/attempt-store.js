@@ -922,9 +922,6 @@ function createAttemptStore(options) {
 
 export {
   createAttemptStore,
-  createStorageError,
   createStorageValidationError,
   normalizeAttemptStatus,
-  normalizeIsoDate,
-  normalizeNullableIsoDate,
 };

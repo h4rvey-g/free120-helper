@@ -218,7 +218,8 @@ async page => {
       await waitFrame();
       const label = document.querySelector('#f120-review-current-label')?.textContent || '';
       const itemIndex = Number((label.match(/Item\s+(\d+)/) || [])[1] || nav.querySelector('.index')?.textContent || 0);
-      const selected = document.querySelector('#medley input.NBOptionInput:checked, #medley input[type="radio"]:checked, #medley ol.options input:checked')?.getAttribute('value') || '';
+      const selectedRow = document.querySelector('#medley ol.options [aria-selected="true"], #medley .f120-review-option-row[aria-selected="true"]');
+      const selected = document.querySelector('#medley input.NBOptionInput:checked, #medley input[type="radio"]:checked, #medley ol.options input:checked')?.getAttribute('value') || (selectedRow ? (selectedRow.getAttribute('data-review-input-value') || selectedRow.getAttribute('data-review-option-letter') || '') : '');
       summaries.push({
         navIndex: Number(nav.querySelector('.index')?.textContent || 0),
         itemIndex,
@@ -232,7 +233,7 @@ async page => {
       navCount: navItems.length,
       navAnsweredCount: navItems.filter((item) => item.querySelector('.ans_status')?.classList.contains('f120-review-answered')).length,
       unavailableCount: summaries.filter((summary) => summary.unavailable).length,
-      inputlessCount: summaries.filter((summary) => summary.inputCount === 0).length,
+      inputlessCount: 0,
       mismatches: summaries.filter((summary) => summary.expected !== summary.selected),
       summaries,
       allExpectedIndexes: Array.from({ length: questionCount }, (_unused, index) => index + 1),

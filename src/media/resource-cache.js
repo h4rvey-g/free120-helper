@@ -374,19 +374,9 @@ async function extractMediaInteractionsForHtml(adapterWindow, html, options = {}
 }
 
 export {
-  DEFAULT_MAX_RESOURCE_BYTES,
-  DEFAULT_MAX_TOTAL_BYTES,
   normalizeResourceUrl,
-  isCacheableResourceUrl,
-  inferContentTypeFromUrl,
-  fetchResourceDataUrl,
   fetchResourceDataByUrl,
-  extractResourceUrlsFromCssText,
   extractResourceUrlsFromHtml,
-  extractMediaMetadataIdsFromHtml,
-  fetchMediaMetadata,
-  extractMediaInteractionsFromMetadata,
-  extractResourceUrlsFromMediaMetadata,
   extractMediaResourceUrlsForHtml,
   extractMediaInteractionsForHtml,
 };
