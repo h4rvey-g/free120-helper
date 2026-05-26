@@ -1,0 +1,42 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/userscript.meta.txt'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(grep -oP '// @version\s+\K\S+' src/userscript.meta.txt)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          files: dist/free120-helper.user.js
+          generate_release_notes: true
+          make_latest: true
