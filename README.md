@@ -1,6 +1,6 @@
 # USMLE Free 120 Helper
 
-A local-only userscript that enhances the official USMLE Free 120 practice exam experience on [orientation.nbme.org](https://orientation.nbme.org). It adds a review mode after the exam ends, allowing you to review your choices, just like any other modern Qbanks.
+A local-only userscript that enhances the official USMLE Free 120 practice exam experience on [orientation.nbme.org](https://orientation.nbme.org). It adds a review mode after the exam ends, allowing you to review your choices, just like any other modern Qbanks. Works on Step 1, Step 2 CK, and Step 3 ACM.
 
 ## Features
 
@@ -18,7 +18,7 @@ A local-only userscript that enhances the official USMLE Free 120 practice exam 
 ## Usage
 
 1. Navigate to [https://orientation.nbme.org/launch/usmle](https://orientation.nbme.org/launch/usmle).
-2. **Capture QBank** (**Important**) — on the launch page, click "Capture QBank" to store answer keys locally. You can choose the specific exams you want to take, or select all (default).
+2. **Capture QBank** (**Important!**) — on the launch page, click "Capture QBank" to store answer keys locally. You can choose the specific exams you want to take, or select all (default). This only needs to be done once.
 3. **Take your exam** — tracking runs automatically; the pill in the corner shows progress
 4. **Review** — after the exam, open local review from the button on exam end page or the history panel
 5. **Export/Import** — If you want to migrate your exam records to another device, use the history panel to back up or restore attempts as JSON
